@@ -1,0 +1,27 @@
+[package]
+name = "parallaxe-cli"
+description = "Parallaxe box 命令行入口（clap，投影共享核心）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "parallaxe"
+path = "src/main.rs"
+
+[features]
+default = ["gui"]
+gui = ["dep:parallaxe-gui"]
+
+[dependencies]
+parallaxe-core = { path = "../core" }
+parallaxe-agent = { path = "../agent" }
+parallaxe-gui = { path = "../gui", optional = true }
+clap.workspace = true
+comfy-table.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

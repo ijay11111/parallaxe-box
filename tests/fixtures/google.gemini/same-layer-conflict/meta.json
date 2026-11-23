@@ -1,0 +1,28 @@
+{
+  "schema": "parallaxe.fixture/v1",
+  "target_id": "google.gemini",
+  "case": "same-layer-conflict",
+  "rule_versions": {
+    "rule.http": 1,
+    "rule.inline3": 1
+  },
+  "recorded_at": "2026-11-21T00:00:00Z",
+  "source_kind": "SYNTHETIC",
+  "source_ref": "assets/signal-rules.toml",
+  "mode": "FIXTURE",
+  "requested_family": "AUTO",
+  "observed_family": "V4",
+  "synthetic_path_id": "path-fixture",
+  "status": 200,
+  "mime": "text/html",
+  "body_bytes": 41,
+  "complete": true,
+  "truncated": false,
+  "expected": {
+    "state": "CONFLICT",
+    "reason": "CONFLICTING_EVIDENCE",
+    "evidence_ids": [],
+    "request_count": 1,
+    "network_request_count": 0
+  }
+}

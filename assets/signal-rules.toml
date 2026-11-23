@@ -1,0 +1,453 @@
+# 阶段1 · 只读提取与安全停步特征；不是在线许可。匹配范围须和目录引用同时成立。
+schema_version = 1
+[detection]
+login_hosts = ["accounts.google.com", "accounts.youtube.com", "myaccount.google.com"]
+login_context_hosts = ["mail.google.com", "drive.google.com", "calendar.google.com"]
+login_path_prefixes = ["/signin/", "/v3/signin/", "/ServiceLogin"]
+consent_hosts = ["consent.google.com", "consent.youtube.com"]
+consent_markers = ["Before you continue to Google", "Before you continue to YouTube"]
+captcha_path_prefixes = ["/sorry/", "/recaptcha/"]
+challenge_markers = ["unusual traffic from your computer network"]
+rate_limit_status = [429]
+auth_or_denied_status = [401, 403]
+allowed_html_types = ["text/html", "application/xhtml+xml"]
+allowed_json_types = ["application/json"]
+min_text_bytes = 1
+max_body_bytes = 16777216
+require_complete_for_content = true
+source = "docs/research/03-google-matrix.md；docs/research/05-signals.md；候选停步特征而非准入或国家证据"
+
+[[rules]]
+id = "rule.http"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "TRANSPORT"
+credibility = "HIGH"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "传输或首跳响应，不声称地区"
+negative_case = "收到 HTTP 不证明产品或国家"
+extract = { kind = "status", pattern = "status", capture = "value" }
+applies_to = [
+  { target_id = "google.accounts", host = "accounts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signin-id", host = "accounts.google.com", path = "/signin/v2/identifier", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signin-v3", host = "accounts.google.com", path = "/v3/signin/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.yt-accounts", host = "accounts.youtube.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.myaccount", host = "myaccount.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signinoptions", host = "myaccount.google.com", path = "/signinoptions", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.security", host = "myaccount.google.com", path = "/security", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.oauth", host = "oauth2.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.openid", host = "openidconnect.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.apis", host = "apis.google.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.ssl-gstatic", host = "ssl.gstatic.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.recaptcha", host = "www.gstatic.com", path = "/recaptcha/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.play-account", host = "play.google.com", path = "/store/account", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gsi", host = "accounts.google.com", path = "/gsi/client", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
+  { target_id = "google.search", host = "www.google.com", path = "/search", surface = "搜索入口：是否明确标来源" },
+  { target_id = "google.images", host = "images.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.maps", host = "maps.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.news", host = "news.google.com", path = "/", surface = "版次跳转：Location 中 hl/gl/ceid" },
+  { target_id = "google.books", host = "books.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.scholar", host = "scholar.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.trends", host = "trends.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.shopping", host = "shopping.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.translate", host = "translate.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.alerts", host = "www.google.com", path = "/alerts", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.arts", host = "artsandculture.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.flights", host = "www.google.com", path = "/travel/flights", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.travel", host = "www.google.com", path = "/travel/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.finance", host = "www.google.com", path = "/finance/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.patents", host = "patents.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.docs", host = "docs.google.com", path = "/document/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.sheets", host = "docs.google.com", path = "/spreadsheets/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.slides", host = "docs.google.com", path = "/presentation/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.forms", host = "docs.google.com", path = "/forms/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.drive", host = "drive.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gmail", host = "mail.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.calendar", host = "calendar.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.meet", host = "meet.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.chat", host = "chat.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.keep", host = "keep.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.tasks", host = "tasks.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.sites", host = "sites.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.photos", host = "photos.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.contacts", host = "contacts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.groups", host = "groups.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.voice", host = "voice.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.one", host = "one.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.takeout", host = "takeout.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gemini", host = "gemini.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.gemini-mobile", host = "support.google.com", path = "/gemini/answer/14579026", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.studio", host = "aistudio.google.com", path = "/", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.gemini-doc", host = "ai.google.dev", path = "/gemini-api/docs", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.models", host = "generativelanguage.googleapis.com", path = "/v1beta/models", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.notebook", host = "notebooklm.google.com", path = "/", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.ai-plans", host = "one.google.com", path = "/about/google-ai-plans/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.colab", host = "colab.research.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.classroom", host = "classroom.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.edu-meet", host = "edu.google.com", path = "/workspace-for-education/products/meet/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.labs", host = "labs.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.flow", host = "labs.google", path = "/fx/tools/flow", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.ccuk", host = "www.google.co.uk", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.flow-current", host = "flow.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.preferences", host = "www.google.com", path = "/preferences", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.youtube", host = "www.youtube.com", path = "/", surface = "媒体配置：HTML 中 GL" },
+  { target_id = "google.yt-music", host = "music.youtube.com", path = "/", surface = "媒体配置：HTML 中 GL" },
+  { target_id = "google.yt-studio", host = "studio.youtube.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.premium", host = "www.youtube.com", path = "/premium", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.tv", host = "tv.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.play", host = "play.google.com", path = "/store", surface = "商店 HTML：国旗资源及配对文案" },
+  { target_id = "google.play-detail", host = "play.google.com", path = "/store/apps/details", surface = "商品/分类页：状态、公开展示面" },
+  { target_id = "google.play-books", host = "play.google.com", path = "/store/books", surface = "商品/分类页：状态、公开展示面" },
+  { target_id = "google.play-games", host = "play.google.com", path = "/store/games", surface = "商品/分类页：状态、公开展示面" },
+  { target_id = "google.play-movies", host = "play.google.com", path = "/store/movies", surface = "商品/分类页：状态、公开展示面" },
+  { target_id = "google.play-console", host = "play.google.com", path = "/console/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.play-country", host = "support.google.com", path = "/googleplay/answer/7431675", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.play-apps", host = "play.google.com", path = "/store/apps", surface = "商店 HTML：国旗资源及配对文案" },
+  { target_id = "google.console", host = "console.cloud.google.com", path = "/", surface = "云控制台或状态页：首跳/服务入口" },
+  { target_id = "google.cloud", host = "cloud.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.vertex", host = "cloud.google.com", path = "/vertex-ai", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.health", host = "status.cloud.google.com", path = "/", surface = "云控制台或状态页：首跳/服务入口" },
+  { target_id = "google.firebase", host = "firebase.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.dev", host = "developers.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.android", host = "developer.android.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.api-explorer", host = "developers.google.com", path = "/apis-explorer", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.shell", host = "shell.cloud.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.skills", host = "www.cloudskillsboost.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.admin", host = "admin.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.marketplace", host = "workspace.google.com", path = "/marketplace", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.appsheet", host = "www.appsheet.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.analytics", host = "analytics.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.tagmanager", host = "tagmanager.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.search-console", host = "search.google.com", path = "/search-console/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.merchant", host = "merchants.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.play-api", host = "developers.google.com", path = "/android-publisher", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.gstatic", host = "gstatic.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.usercontent", host = "googleusercontent.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.ggpht", host = "ggpht.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.ytimg", host = "ytimg.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.video", host = "googlevideo.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.gen-api", host = "generativelanguage.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.vertex-api", host = "aiplatform.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.googleapis", host = "googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.fonts-api", host = "fonts.googleapis.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.fonts", host = "fonts.gstatic.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.lh3", host = "lh3.googleusercontent.com", path = "/", surface = "静态/共享根：TLS、HTTP 状态" },
+  { target_id = "google.storage", host = "storage.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.http204", host = "www.google.com", path = "/generate_204", surface = "204：响应体长度及疑似地区头" },
+  { target_id = "control.chatgpt", host = "status.openai.com", path = "/", surface = "AI · ChatGPT" },
+  { target_id = "control.openai-api", host = "platform.openai.com", path = "/docs/overview", surface = "AI · OpenAI API" },
+  { target_id = "control.claude", host = "status.claude.com", path = "/", surface = "AI · Claude" },
+  { target_id = "control.claude-api", host = "platform.claude.com", path = "/docs/en/home", surface = "AI · Claude API" },
+  { target_id = "control.perplexity", host = "docs.perplexity.ai", path = "/", surface = "AI · Perplexity" },
+  { target_id = "control.copilot", host = "www.microsoft.com", path = "/en-us/microsoft-copilot", surface = "AI · Copilot" },
+  { target_id = "control.grok", host = "docs.x.ai", path = "/", surface = "AI · Grok/xAI" },
+  { target_id = "control.netflix", host = "help.netflix.com", path = "/legal/termsofuse", surface = "媒体 · Netflix" },
+  { target_id = "control.disney", host = "help.disneyplus.com", path = "/", surface = "媒体 · Disney+" },
+  { target_id = "control.prime", host = "www.primevideo.com", path = "/help", surface = "媒体 · Prime Video" },
+  { target_id = "control.spotify", host = "support.spotify.com", path = "/", surface = "媒体 · Spotify" },
+  { target_id = "control.tiktok", host = "support.tiktok.com", path = "/", surface = "媒体 · TikTok" },
+  { target_id = "control.hbomax", host = "help.hbomax.com", path = "/", surface = "媒体 · HBO Max" },
+  { target_id = "control.x", host = "help.x.com", path = "/", surface = "社交 · X" },
+  { target_id = "control.reddit", host = "www.redditstatus.com", path = "/", surface = "社交 · Reddit" },
+  { target_id = "control.telegram", host = "telegram.org", path = "/faq", surface = "社交 · Telegram" },
+  { target_id = "control.github", host = "www.githubstatus.com", path = "/", surface = "开发 · GitHub" },
+  { target_id = "control.npm", host = "status.npmjs.org", path = "/", surface = "开发 · npm" },
+  { target_id = "control.pypi", host = "status.python.org", path = "/", surface = "开发 · PyPI" },
+  { target_id = "control.bing", host = "www.bing.com", path = "/", surface = "搜索 · Bing" },
+  { target_id = "control.rail12306", host = "www.12306.cn", path = "/", surface = "国内 · 12306" },
+  { target_id = "control.taobao", host = "www.taobao.com", path = "/", surface = "国内 · 淘宝" },
+  { target_id = "control.jd", host = "www.jd.com", path = "/", surface = "国内 · 京东" },
+  { target_id = "control.bilibili", host = "www.bilibili.com", path = "/", surface = "国内 · B 站" },
+  { target_id = "control.wechat", host = "wx.qq.com", path = "/", surface = "国内 · 微信网页" },
+  { target_id = "control.icbc", host = "www.icbc.com.cn", path = "/", surface = "国内 · 工行" },
+  { target_id = "control.cf-trace", host = "one.one.one.one", path = "/cdn-cgi/trace", surface = "CDN · Cloudflare trace" },
+  { target_id = "control.cf-meta", host = "speed.cloudflare.com", path = "/meta", surface = "CDN · Cloudflare speed meta" },
+]
+
+[[rules]]
+id = "rule.type"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "TRANSPORT"
+credibility = "HIGH"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "响应类型，不证明鉴权或地区"
+negative_case = "JSON 类型的 403 不证明授权成功"
+extract = { kind = "header", pattern = "content-type", capture = "value" }
+applies_to = [
+  { target_id = "google.oauth", host = "oauth2.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.openid", host = "openidconnect.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.apis", host = "apis.google.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.models", host = "generativelanguage.googleapis.com", path = "/v1beta/models", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.gen-api", host = "generativelanguage.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.vertex-api", host = "aiplatform.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.googleapis", host = "googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+  { target_id = "google.storage", host = "storage.googleapis.com", path = "/", surface = "API 根或列表：状态/响应类型" },
+]
+
+[[rules]]
+id = "rule.redirect"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "TRANSPORT"
+credibility = "HIGH"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "首跳交接主机；不主动跟随"
+negative_case = "首跳到登录域不代表用户已登录"
+extract = { kind = "redirect_host", pattern = "location.host", capture = "value" }
+applies_to = [
+  { target_id = "google.accounts", host = "accounts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signin-id", host = "accounts.google.com", path = "/signin/v2/identifier", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signin-v3", host = "accounts.google.com", path = "/v3/signin/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.yt-accounts", host = "accounts.youtube.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.myaccount", host = "myaccount.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.signinoptions", host = "myaccount.google.com", path = "/signinoptions", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.security", host = "myaccount.google.com", path = "/security", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.play-account", host = "play.google.com", path = "/store/account", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.images", host = "images.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.maps", host = "maps.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.news", host = "news.google.com", path = "/", surface = "版次跳转：Location 中 hl/gl/ceid" },
+  { target_id = "google.scholar", host = "scholar.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.trends", host = "trends.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.shopping", host = "shopping.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.translate", host = "translate.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.alerts", host = "www.google.com", path = "/alerts", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.arts", host = "artsandculture.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.flights", host = "www.google.com", path = "/travel/flights", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.travel", host = "www.google.com", path = "/travel/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.finance", host = "www.google.com", path = "/finance/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.patents", host = "patents.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.docs", host = "docs.google.com", path = "/document/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.sheets", host = "docs.google.com", path = "/spreadsheets/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.slides", host = "docs.google.com", path = "/presentation/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.forms", host = "docs.google.com", path = "/forms/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.drive", host = "drive.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gmail", host = "mail.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.calendar", host = "calendar.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.meet", host = "meet.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.chat", host = "chat.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.keep", host = "keep.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.tasks", host = "tasks.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.sites", host = "sites.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.photos", host = "photos.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.contacts", host = "contacts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.groups", host = "groups.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.voice", host = "voice.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.one", host = "one.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.takeout", host = "takeout.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gemini-mobile", host = "support.google.com", path = "/gemini/answer/14579026", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.studio", host = "aistudio.google.com", path = "/", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.gemini-doc", host = "ai.google.dev", path = "/gemini-api/docs", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.notebook", host = "notebooklm.google.com", path = "/", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.ai-plans", host = "one.google.com", path = "/about/google-ai-plans/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.colab", host = "colab.research.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.classroom", host = "classroom.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.edu-meet", host = "edu.google.com", path = "/workspace-for-education/products/meet/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.labs", host = "labs.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.flow", host = "labs.google", path = "/fx/tools/flow", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.ccuk", host = "www.google.co.uk", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.flow-current", host = "flow.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.yt-studio", host = "studio.youtube.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.premium", host = "www.youtube.com", path = "/premium", surface = "公开资格入口：HTTP/明确门槛说明" },
+  { target_id = "google.tv", host = "tv.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.play-console", host = "play.google.com", path = "/console/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.play-country", host = "support.google.com", path = "/googleplay/answer/7431675", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.console", host = "console.cloud.google.com", path = "/", surface = "云控制台或状态页：首跳/服务入口" },
+  { target_id = "google.cloud", host = "cloud.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.vertex", host = "cloud.google.com", path = "/vertex-ai", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.health", host = "status.cloud.google.com", path = "/", surface = "云控制台或状态页：首跳/服务入口" },
+  { target_id = "google.firebase", host = "firebase.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.dev", host = "developers.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.android", host = "developer.android.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.api-explorer", host = "developers.google.com", path = "/apis-explorer", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.shell", host = "shell.cloud.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.skills", host = "www.cloudskillsboost.google", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.admin", host = "admin.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.marketplace", host = "workspace.google.com", path = "/marketplace", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.appsheet", host = "www.appsheet.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "google.analytics", host = "analytics.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.tagmanager", host = "tagmanager.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.search-console", host = "search.google.com", path = "/search-console/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.merchant", host = "merchants.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.play-api", host = "developers.google.com", path = "/android-publisher", surface = "公开说明/目录：状态或新入口" },
+  { target_id = "control.chatgpt", host = "status.openai.com", path = "/", surface = "AI · ChatGPT" },
+  { target_id = "control.openai-api", host = "platform.openai.com", path = "/docs/overview", surface = "AI · OpenAI API" },
+  { target_id = "control.claude", host = "status.claude.com", path = "/", surface = "AI · Claude" },
+  { target_id = "control.claude-api", host = "platform.claude.com", path = "/docs/en/home", surface = "AI · Claude API" },
+  { target_id = "control.perplexity", host = "docs.perplexity.ai", path = "/", surface = "AI · Perplexity" },
+  { target_id = "control.copilot", host = "www.microsoft.com", path = "/en-us/microsoft-copilot", surface = "AI · Copilot" },
+  { target_id = "control.grok", host = "docs.x.ai", path = "/", surface = "AI · Grok/xAI" },
+  { target_id = "control.netflix", host = "help.netflix.com", path = "/legal/termsofuse", surface = "媒体 · Netflix" },
+  { target_id = "control.disney", host = "help.disneyplus.com", path = "/", surface = "媒体 · Disney+" },
+  { target_id = "control.prime", host = "www.primevideo.com", path = "/help", surface = "媒体 · Prime Video" },
+  { target_id = "control.spotify", host = "support.spotify.com", path = "/", surface = "媒体 · Spotify" },
+  { target_id = "control.tiktok", host = "support.tiktok.com", path = "/", surface = "媒体 · TikTok" },
+  { target_id = "control.hbomax", host = "help.hbomax.com", path = "/", surface = "媒体 · HBO Max" },
+  { target_id = "control.x", host = "help.x.com", path = "/", surface = "社交 · X" },
+  { target_id = "control.reddit", host = "www.redditstatus.com", path = "/", surface = "社交 · Reddit" },
+  { target_id = "control.telegram", host = "telegram.org", path = "/faq", surface = "社交 · Telegram" },
+  { target_id = "control.github", host = "www.githubstatus.com", path = "/", surface = "开发 · GitHub" },
+  { target_id = "control.npm", host = "status.npmjs.org", path = "/", surface = "开发 · npm" },
+  { target_id = "control.pypi", host = "status.python.org", path = "/", surface = "开发 · PyPI" },
+  { target_id = "control.bing", host = "www.bing.com", path = "/", surface = "搜索 · Bing" },
+  { target_id = "control.rail12306", host = "www.12306.cn", path = "/", surface = "国内 · 12306" },
+  { target_id = "control.taobao", host = "www.taobao.com", path = "/", surface = "国内 · 淘宝" },
+  { target_id = "control.jd", host = "www.jd.com", path = "/", surface = "国内 · 京东" },
+  { target_id = "control.bilibili", host = "www.bilibili.com", path = "/", surface = "国内 · B 站" },
+  { target_id = "control.wechat", host = "wx.qq.com", path = "/", surface = "国内 · 微信网页" },
+  { target_id = "control.icbc", host = "www.icbc.com.cn", path = "/", surface = "国内 · 工行" },
+]
+
+[[rules]]
+id = "rule.edition"
+version = 1
+enabled = true
+layer = "PREFERENCE"
+channel = "SERVICE"
+credibility = "MEDIUM"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "版本参数；用户输入不得投票"
+negative_case = "请求自带版本参数不能作为服务观察"
+extract = { kind = "redirect_param", pattern = "hl,gl,ceid", capture = "value" }
+applies_to = [
+  { target_id = "google.images", host = "images.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.maps", host = "maps.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.news", host = "news.google.com", path = "/", surface = "版次跳转：Location 中 hl/gl/ceid" },
+  { target_id = "google.scholar", host = "scholar.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.trends", host = "trends.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.shopping", host = "shopping.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.translate", host = "translate.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.flights", host = "www.google.com", path = "/travel/flights", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.travel", host = "www.google.com", path = "/travel/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.finance", host = "www.google.com", path = "/finance/", surface = "展示入口：Location 主机/公开版次参数" },
+  { target_id = "google.ccuk", host = "www.google.co.uk", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
+]
+
+[[rules]]
+id = "rule.inline3"
+version = 1
+enabled = true
+layer = "SERVICE_POLICY"
+channel = "SERVICE"
+credibility = "LOW"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "未公开的页面内联片段，不证明资格"
+negative_case = "截断或非预期表面不匹配；三字码不证明资格"
+extract = { kind = "regex", pattern = ",2,1,200,\"([A-Z]{3})\"", capture = "1" }
+applies_to = [
+  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
+  { target_id = "google.books", host = "books.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.gemini", host = "gemini.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.preferences", host = "www.google.com", path = "/preferences", surface = "页面内联：,2,1,200 后三字码" },
+]
+
+[[rules]]
+id = "rule.yt-gl"
+version = 1
+enabled = true
+layer = "PREFERENCE"
+channel = "SERVICE"
+credibility = "MEDIUM"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "仅 YouTube 页面内容版次"
+negative_case = "同意页中的 GL 不作版次证据"
+extract = { kind = "regex", pattern = "\"GL\":\"([A-Z]{2})\"", capture = "1" }
+applies_to = [
+  { target_id = "google.youtube", host = "www.youtube.com", path = "/", surface = "媒体配置：HTML 中 GL" },
+  { target_id = "google.yt-music", host = "music.youtube.com", path = "/", surface = "媒体配置：HTML 中 GL" },
+]
+
+[[rules]]
+id = "rule.flag"
+version = 1
+enabled = true
+layer = "PREFERENCE"
+channel = "SERVICE"
+credibility = "LOW"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "只记录素材，不证明已选商店国家"
+negative_case = "多个国旗或仅有图标不认定为付款国家"
+extract = { kind = "regex", pattern = "regionflags/([a-z]{2})\\.png", capture = "1" }
+applies_to = [
+  { target_id = "google.play", host = "play.google.com", path = "/store", surface = "商店 HTML：国旗资源及配对文案" },
+  { target_id = "google.play-apps", host = "play.google.com", path = "/store/apps", surface = "商店 HTML：国旗资源及配对文案" },
+]
+
+[[rules]]
+id = "rule.footer"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "SERVICE"
+credibility = "HIGH"
+source_grade = "OFFICIAL_DOC"
+notes = "只识别来源标签；不收地点或地址"
+negative_case = "设备/历史来源标签不是 IP 证据"
+extract = { kind = "text_label", pattern = "From your internet address", capture = "value" }
+applies_to = [
+  { target_id = "google.search", host = "www.google.com", path = "/search", surface = "搜索入口：是否明确标来源" },
+]
+
+[[rules]]
+id = "rule.empty"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "TRANSPORT"
+credibility = "HIGH"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "空体长度，只作链路证据"
+negative_case = "204 不带地区头不推国家"
+extract = { kind = "body_length", pattern = "body_bytes", capture = "value" }
+applies_to = [
+  { target_id = "google.http204", host = "www.google.com", path = "/generate_204", surface = "204：响应体长度及疑似地区头" },
+]
+
+[[rules]]
+id = "rule.trace"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "SERVICE"
+credibility = "HIGH"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "仅该接收方；loc 和 colo 分开，IP 只记存在"
+negative_case = "colo 不能填 loc；真实 ip 不持久化"
+extract = { kind = "text_kv", pattern = "loc,colo,http,tls,ip_present", capture = "value" }
+applies_to = [
+  { target_id = "control.cf-trace", host = "one.one.one.one", path = "/cdn-cgi/trace", surface = "CDN · Cloudflare trace" },
+]
+
+[[rules]]
+id = "rule.meta"
+version = 1
+enabled = true
+layer = "EGRESS_NETWORK"
+channel = "SERVICE"
+credibility = "NONE"
+source_grade = "INFERENCE"
+notes = "候选字段；本次 403 无有效样本"
+negative_case = "本次仅 403；拒绝样本不能填 JSON 字段"
+extract = { kind = "json", pattern = "country,colo,asn", capture = "value" }
+applies_to = [
+  { target_id = "control.cf-meta", host = "speed.cloudflare.com", path = "/meta", surface = "CDN · Cloudflare speed meta" },
+]
+
+[[rules]]
+id = "rule.legacy-region"
+version = 1
+enabled = false
+layer = "SERVICE_POLICY"
+channel = "SERVICE"
+credibility = "NONE"
+source_grade = "LEGACY_CODE"
+notes = "已失效的首页选择器；即使旧样本含该属性也不产生国家值"
+negative_case = "有无该旧属性都必须零产出"
+extract = { kind = "regex", pattern = "name=\"region\"", capture = "value" }
+applies_to = [
+  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
+]

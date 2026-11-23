@@ -1,0 +1,339 @@
+# 中文注释：本工作流只做「可复现的门禁 + 六平台原生构建」，不做任何在线探测。
+# 所有构建/测试步骤先 `cargo fetch --locked` 拉取锁定依赖，随后一律 `--offline --locked`，
+# 保证 CI 与发行烟雾脚本消费的是同一份 `Cargo.lock`。
+#
+# 六平台与运行器对应关系（均为原生架构，避免交叉链接器缺失导致的假绿/假红）：
+#   x86_64-pc-windows-msvc     -> windows-latest
+#   aarch64-pc-windows-msvc    -> windows-11-arm
+#   x86_64-apple-darwin        -> macos-15-intel
+#   aarch64-apple-darwin       -> macos-15
+#   x86_64-unknown-linux-musl  -> ubuntu-latest（musl-tools）
+#   aarch64-unknown-linux-musl -> ubuntu-24.04-arm（musl-tools）
+#
+# 若仓库为私有且无法使用 ARM 运行器，请把对应矩阵项改为在 x64 运行器上交叉编译，
+# 并在工作流中显式标注「交叉编译，未在本机运行」——不得把未执行的构建写成通过。
+# 依据：docs/packaging.md §2（六平台矩阵与 Linux musl GUI 的诚实工程说明）。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  gates:
+    name: 门禁（fmt / clippy / test / 无头 / 发行烟雾）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust（rustfmt + clippy）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+
+      - name: 安装 GUI 编译期系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev python3-pil python3-numpy
+
+      - name: 拉取锁定依赖（后续全部 --offline）
+        run: cargo fetch --locked
+
+      - name: YAML 语法自检
+        run: |
+          python3 -m venv .yaml-venv
+          ./.yaml-venv/bin/python -m pip install --quiet pyyaml
+          ./.yaml-venv/bin/python - <<'PY'
+          import yaml
+          with open(".github/workflows/ci.yml", encoding="utf-8") as fh:
+              doc = yaml.safe_load(fh)
+          assert isinstance(doc, dict) and "jobs" in doc, "ci.yml 结构异常"
+          print("ci.yml 语法通过，jobs =", ", ".join(doc["jobs"]))
+          PY
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（-D warnings）
+        run: cargo clippy --workspace --all-targets --offline --locked -- -D warnings
+
+      - name: 纯无头构建检查
+        run: cargo check -p parallaxe-cli --no-default-features --all-targets --offline --locked
+
+      - name: 全工作区测试
+        run: cargo test --workspace --offline --locked
+
+      - name: 结果导出（md / txt）烟雾
+        run: |
+          set +e
+          cargo run -q -p parallaxe-cli --no-default-features --offline --locked -- \
+            check --headless --profile simple --format md > /tmp/parallaxe-report.md
+          code_md=$?
+          cargo run -q -p parallaxe-cli --no-default-features --offline --locked -- \
+            check --headless --profile simple --format txt > /tmp/parallaxe-report.txt
+          code_txt=$?
+          set -e
+          test "$code_md" -eq 3
+          test "$code_txt" -eq 3
+          grep -q '| 目标 | 状态 |' /tmp/parallaxe-report.md
+          grep -q '目标' /tmp/parallaxe-report.txt
+          if grep -q $'\x1b' /tmp/parallaxe-report.txt; then exit 1; fi
+
+      - name: 运行前风险预览（零发包）
+        run: |
+          cargo run -q -p parallaxe-cli --no-default-features --offline --locked -- \
+            check --plan --profile google-all --json > /tmp/parallaxe-plan.json
+          python3 - <<'PY'
+          import json
+          plan = json.load(open("/tmp/parallaxe-plan.json"))
+          assert plan["schema"] == "parallaxe.network-plan/v1"
+          assert plan["target_count"] == 107
+          assert plan["zero_packet"] is True
+          assert plan["min_interval_ms"] >= 3000
+          print("plan ok:", plan["target_count"], plan["estimated_wall_ms"])
+          PY
+
+      - name: 发行烟雾验收（离线断言）
+        run: python3 tests/release-smoke/release_smoke.py
+
+      - name: 界面优化检验（量化报告，不阻塞视觉告警）
+        run: python3 tests/release-smoke/ui_audit.py
+
+      - name: 上传烟雾报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-gates
+          path: tests/release-smoke/latest
+          if-no-files-found: warn
+
+  wasm:
+    name: Web/WASM 构建检查（core + 离线 GUI）
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 与 wasm 目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      - name: 拉取锁定依赖
+        run: cargo fetch --locked --target wasm32-unknown-unknown
+
+      - name: core 的 wasm32 依赖图（无 mio/fs2/if-addrs/reqwest）
+        run: cargo check -p parallaxe-core --target wasm32-unknown-unknown --offline --locked
+
+      - name: GUI 离线解释入口
+        run: cargo check -p parallaxe-gui --target wasm32-unknown-unknown --offline --locked
+
+  android-check:
+    name: Android 入口构建检查（arm64，不出 APK）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 与 Android 目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: 安装 Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: 安装 cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+
+      - name: 拉取锁定依赖
+        run: cargo fetch --locked --target aarch64-linux-android
+
+      - name: 检查 android_main / cdylib 编译
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: cargo ndk -t arm64-v8a check -p parallaxe-gui --offline --locked
+
+  gui-doctor:
+    name: 截图工具自检（Windows 独立门禁）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+
+      - name: 拉取锁定依赖
+        run: cargo fetch --locked
+
+      - name: 构建主程序与走读演练程序
+        run: |
+          cargo build -p parallaxe-cli --offline --locked
+          cargo build -p parallaxe-gui --example gui_walkthrough --offline --locked
+
+      - name: 安装截图依赖
+        run: python -m pip install --quiet --upgrade pillow pywin32
+
+      - name: 截图工具严格自检
+        run: python tools/capture_gui.py --doctor --strict
+
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            gui: "true"
+            musl: "false"
+            rustflags: "-C target-feature=+crt-static"
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            gui: "true"
+            musl: "false"
+            rustflags: "-C target-feature=+crt-static"
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            gui: "true"
+            musl: "false"
+            rustflags: ""
+          - os: macos-15
+            target: aarch64-apple-darwin
+            gui: "true"
+            musl: "false"
+            rustflags: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            gui: "false"
+            musl: "true"
+            rustflags: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            gui: "false"
+            musl: "true"
+            rustflags: ""
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.musl == 'true' && 'musl-gcc' || '' }}
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.musl == 'true' && 'musl-gcc' || '' }}
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 与目标三元组
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: 安装 musl 链接器
+        if: matrix.musl == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: 拉取锁定依赖
+        run: |
+          cargo fetch --locked
+          cargo fetch --locked --target ${{ matrix.target }}
+
+      - name: 构建纯无头单文件（硬门禁）
+        run: >
+          cargo build --release --locked --offline --target ${{ matrix.target }}
+          -p parallaxe-cli --no-default-features
+
+      - name: 另存无头产物（避免被 GUI 构建覆盖）
+        shell: bash
+        run: |
+          DIR="target/${{ matrix.target }}/release"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$DIR/parallaxe.exe" "$DIR/parallaxe-headless.exe"
+          else
+            cp "$DIR/parallaxe" "$DIR/parallaxe-headless"
+          fi
+
+      - name: 构建完整 GUI 单文件（hard gate）
+        if: matrix.gui == 'true'
+        run: >
+          cargo build --release --locked --offline --target ${{ matrix.target }}
+          -p parallaxe-cli
+
+      - name: 输出产物信息
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/parallaxe-headless"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
+          ls -lh "$BIN"
+          "$BIN" --version
+
+      - name: 平台基线自检（无头二进制）
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/parallaxe-headless"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
+          PY=python3
+          if [ "${{ runner.os }}" = "Windows" ]; then PY=python; fi
+          "$PY" tests/release-smoke/release_smoke.py \
+            --bin "$BIN" --no-build --no-cargo-tests \
+            --out "tests/release-smoke/${{ matrix.target }}"
+
+      - name: 上传构建产物与烟雾报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallaxe-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/parallaxe
+            target/${{ matrix.target }}/release/parallaxe.exe
+            target/${{ matrix.target }}/release/parallaxe-headless
+            target/${{ matrix.target }}/release/parallaxe-headless.exe
+            tests/release-smoke/${{ matrix.target }}
+          if-no-files-found: warn

@@ -1,0 +1,16 @@
+# 仅格式示例，不装载为真实用户选择；不授权网络访问或写入。
+schema_version = 1
+example_only = true
+[[services]]
+id = "google.gemini"
+criticality = "CRITICAL"
+protect_from_guard = true
+route_policy = "PROTECTED"
+selected_by = "USER"
+
+[[services]]
+id = "google.books"
+criticality = "OPTIONAL"
+protect_from_guard = false
+route_policy = "CURRENT_PATH"
+selected_by = "USER"

@@ -1,0 +1,2175 @@
+# Parallaxe box · v1 注册目录；不是联网许可或执行规则。详见 docs/architecture/03-schemas.md。
+schema_version = 1
+[defaults]
+method = "GET"
+precondition = "ANONYMOUS_ONLY"
+request_budget = 1
+max_body_bytes = 16777216
+max_redirects = 0
+stale_misses = 3
+source_type = "DIRECT_ANONYMOUS_OBSERVATION"
+verified_at = 2026-11-21
+[admission]
+# 仅发行审查层可提供精确表面许可。外部 TOML 无权写此表。
+grants = []
+
+[[targets]]
+id = "google.accounts"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://accounts.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.signin-id"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://accounts.google.com/signin/v2/identifier"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.signin-v3"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://accounts.google.com/v3/signin/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.yt-accounts"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://accounts.youtube.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.myaccount"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://myaccount.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.signinoptions"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://myaccount.google.com/signinoptions"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.security"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://myaccount.google.com/security"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.oauth"
+family = "api"
+group = "google.api"
+matrix_group = "A"
+url = "https://oauth2.googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.openid"
+family = "api"
+group = "google.api"
+matrix_group = "A"
+url = "https://openidconnect.googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.apis"
+family = "api"
+group = "google.api"
+matrix_group = "A"
+url = "https://apis.google.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.ssl-gstatic"
+family = "static"
+group = "google.static"
+matrix_group = "A"
+url = "https://ssl.gstatic.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.recaptcha"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://www.gstatic.com/recaptcha/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-account"
+family = "store"
+group = "google.store"
+matrix_group = "A"
+url = "https://play.google.com/store/account"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gsi"
+family = "identity"
+group = "google.identity"
+matrix_group = "A"
+url = "https://accounts.google.com/gsi/client"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.home"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.com/"
+surface = "首页 HTML：旧 region 与内联三字码"
+signals = ["rule.http", "rule.inline3"]
+confidence = "LOW"
+confidence_basis = "未公开字段；低"
+failure = "改版、A/B 或字段重名，弃地区值"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.search"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.com/search"
+surface = "搜索入口：是否明确标来源"
+signals = ["rule.http", "rule.footer"]
+confidence = "NONE"
+confidence_basis = "服务归因标签；本轮无"
+failure = "无查询/无页脚/混入设备标签即不用"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.images"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://images.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "LOW"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.maps"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://maps.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.news"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://news.google.com/"
+surface = "版次跳转：Location 中 hl/gl/ceid"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "MEDIUM"
+confidence_basis = "用户控制或版次；中（仅版本）"
+failure = "手动参数、缓存或无跳转；不投出口票"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.books"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://books.google.com/"
+surface = "页面内联：,2,1,200 后三字码"
+signals = ["rule.http", "rule.inline3"]
+confidence = "NONE"
+confidence_basis = "此响应无该地区字段"
+failure = "版式、内容协商、壳页；不跨站借值"
+protected = false
+verification = "FIELD_UNVERIFIED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.scholar"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://scholar.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.trends"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://trends.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.shopping"
+family = "store"
+group = "google.store"
+matrix_group = "B"
+url = "https://shopping.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.translate"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://translate.google.com/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.alerts"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.com/alerts"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.arts"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://artsandculture.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.flights"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.com/travel/flights"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.travel"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://www.google.com/travel/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.finance"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://www.google.com/finance/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.patents"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://patents.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.docs"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://docs.google.com/document/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.sheets"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://docs.google.com/spreadsheets/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.slides"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://docs.google.com/presentation/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.forms"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://docs.google.com/forms/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.drive"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://drive.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gmail"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://mail.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.calendar"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://calendar.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.meet"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://meet.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.chat"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://chat.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.keep"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://keep.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.tasks"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://tasks.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.sites"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://sites.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.photos"
+family = "content"
+group = "google.content"
+matrix_group = "B"
+url = "https://photos.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.contacts"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://contacts.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.groups"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://groups.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.voice"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "B"
+url = "https://voice.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.one"
+family = "store"
+group = "google.store"
+matrix_group = "B"
+url = "https://one.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.takeout"
+family = "identity"
+group = "google.identity"
+matrix_group = "B"
+url = "https://takeout.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gemini"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://gemini.google.com/"
+surface = "页面内联：,2,1,200 后三字码"
+signals = ["rule.http", "rule.inline3"]
+confidence = "LOW"
+confidence_basis = "未公开字段；低（仅命中时）"
+failure = "版式、内容协商、壳页；不跨站借值"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gemini-mobile"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://support.google.com/gemini/answer/14579026"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.studio"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://aistudio.google.com/"
+surface = "公开资格入口：HTTP/明确门槛说明"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "服务策略；无地区码"
+failure = "普通 200/403、营销文案不证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gemini-doc"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://ai.google.dev/gemini-api/docs"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.models"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://generativelanguage.googleapis.com/v1beta/models"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.notebook"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://notebooklm.google.com/"
+surface = "公开资格入口：HTTP/明确门槛说明"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "服务策略；无地区码"
+failure = "普通 200/403、营销文案不证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+observed_redirect_host = "notebook.google.com"
+
+[[targets]]
+id = "google.ai-plans"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://one.google.com/about/google-ai-plans/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.colab"
+family = "education"
+group = "google.education"
+matrix_group = "B"
+url = "https://colab.research.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.classroom"
+family = "education"
+group = "google.education"
+matrix_group = "B"
+url = "https://classroom.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.edu-meet"
+family = "education"
+group = "google.education"
+matrix_group = "B"
+url = "https://edu.google.com/workspace-for-education/products/meet/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.labs"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://labs.google/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.flow"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://labs.google/fx/tools/flow"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.ccuk"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.co.uk/"
+surface = "展示入口：Location 主机/公开版次参数"
+signals = ["rule.http", "rule.redirect", "rule.edition"]
+confidence = "NONE"
+confidence_basis = "展示版次；低（仅返回值）"
+failure = "可选语言、地区、缓存；不反推出口"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.flow-current"
+family = "ai"
+group = "google.ai"
+matrix_group = "B"
+url = "https://flow.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.preferences"
+family = "search"
+group = "google.search"
+matrix_group = "B"
+url = "https://www.google.com/preferences"
+surface = "页面内联：,2,1,200 后三字码"
+signals = ["rule.http", "rule.inline3"]
+confidence = "NONE"
+confidence_basis = "此响应无该地区字段"
+failure = "版式、内容协商、壳页；不跨站借值"
+protected = true
+verification = "FIELD_UNVERIFIED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.youtube"
+family = "media"
+group = "google.media"
+matrix_group = "C"
+url = "https://www.youtube.com/"
+surface = "媒体配置：HTML 中 GL"
+signals = ["rule.http", "rule.yt-gl"]
+confidence = "MEDIUM"
+confidence_basis = "用户控制或版次；中（仅版本且命中）"
+failure = "默认 US、同意页、配置缺失；不测播放"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.yt-music"
+family = "media"
+group = "google.media"
+matrix_group = "C"
+url = "https://music.youtube.com/"
+surface = "媒体配置：HTML 中 GL"
+signals = ["rule.http", "rule.yt-gl"]
+confidence = "NONE"
+confidence_basis = "此响应无该地区字段"
+failure = "默认 US、同意页、配置缺失；不测播放"
+protected = false
+verification = "FIELD_UNVERIFIED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.yt-studio"
+family = "media"
+group = "google.media"
+matrix_group = "C"
+url = "https://studio.youtube.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.premium"
+family = "media"
+group = "google.media"
+matrix_group = "C"
+url = "https://www.youtube.com/premium"
+surface = "公开资格入口：HTTP/明确门槛说明"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "服务策略；无地区码"
+failure = "普通 200/403、营销文案不证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.tv"
+family = "media"
+group = "google.media"
+matrix_group = "C"
+url = "https://tv.google/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store"
+surface = "商店 HTML：国旗资源及配对文案"
+signals = ["rule.http", "rule.flag"]
+confidence = "NONE"
+confidence_basis = "此响应无该地区字段"
+failure = "选择列表、文案缺位或重定向不算选中值"
+protected = true
+verification = "FIELD_UNVERIFIED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-detail"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store/apps/details?id=com.google.android.youtube"
+surface = "商品/分类页：状态、公开展示面"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "目录版次；无可靠国家"
+failure = "可见不等于可买；币种、目录因版本变化"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-books"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store/books"
+surface = "商品/分类页：状态、公开展示面"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "目录版次；无可靠国家"
+failure = "可见不等于可买；币种、目录因版本变化"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-games"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store/games"
+surface = "商品/分类页：状态、公开展示面"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "目录版次；无可靠国家"
+failure = "可见不等于可买；币种、目录因版本变化"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-movies"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store/movies"
+surface = "商品/分类页：状态、公开展示面"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "目录版次；无可靠国家"
+failure = "可见不等于可买；币种、目录因版本变化"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-console"
+family = "developer"
+group = "google.developer"
+matrix_group = "C"
+url = "https://play.google.com/console/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-country"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://support.google.com/googleplay/answer/7431675"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-apps"
+family = "store"
+group = "google.store"
+matrix_group = "C"
+url = "https://play.google.com/store/apps"
+surface = "商店 HTML：国旗资源及配对文案"
+signals = ["rule.http", "rule.flag"]
+confidence = "LOW"
+confidence_basis = "商店版次；低（仅素材）"
+failure = "选择列表、文案缺位或重定向不算选中值"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.console"
+family = "cloud"
+group = "google.cloud"
+matrix_group = "D"
+url = "https://console.cloud.google.com/"
+surface = "云控制台或状态页：首跳/服务入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "资源或登录；无"
+failure = "状态页区域不指人；租户配置不可见"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.cloud"
+family = "cloud"
+group = "google.cloud"
+matrix_group = "D"
+url = "https://cloud.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.vertex"
+family = "cloud"
+group = "google.cloud"
+matrix_group = "D"
+url = "https://cloud.google.com/vertex-ai"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.health"
+family = "cloud"
+group = "google.cloud"
+matrix_group = "D"
+url = "https://status.cloud.google.com/"
+surface = "云控制台或状态页：首跳/服务入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "资源或登录；无"
+failure = "状态页区域不指人；租户配置不可见"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.firebase"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://firebase.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.dev"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://developers.google.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.android"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://developer.android.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.api-explorer"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://developers.google.com/apis-explorer"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.shell"
+family = "cloud"
+group = "google.cloud"
+matrix_group = "D"
+url = "https://shell.cloud.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.skills"
+family = "education"
+group = "google.education"
+matrix_group = "D"
+url = "https://www.cloudskillsboost.google/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.admin"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "D"
+url = "https://admin.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.marketplace"
+family = "workspace"
+group = "google.workspace"
+matrix_group = "D"
+url = "https://workspace.google.com/marketplace"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.appsheet"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://www.appsheet.com/"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.analytics"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://analytics.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.tagmanager"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://tagmanager.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.search-console"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://search.google.com/search-console/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.merchant"
+family = "store"
+group = "google.store"
+matrix_group = "D"
+url = "https://merchants.google.com/"
+surface = "登录入口：首跳主机/状态"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "账号依赖；无"
+failure = "入口换版或登录墙，停在首跳"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.play-api"
+family = "developer"
+group = "google.developer"
+matrix_group = "D"
+url = "https://developers.google.com/android-publisher"
+surface = "公开说明/目录：状态或新入口"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "公开资料；无"
+failure = "文档、营销页或重命名均不能证明资格"
+protected = false
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gstatic"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://gstatic.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.usercontent"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://googleusercontent.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.ggpht"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://ggpht.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "未获 HTTP；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "NO_HTTP"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.ytimg"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://ytimg.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "未获 HTTP；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "NO_HTTP"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.video"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://googlevideo.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "未获 HTTP；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "NO_HTTP"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.gen-api"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://generativelanguage.googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.vertex-api"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://aiplatform.googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.googleapis"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.fonts-api"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://fonts.googleapis.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.fonts"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://fonts.gstatic.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.lh3"
+family = "static"
+group = "google.static"
+matrix_group = "E"
+url = "https://lh3.googleusercontent.com/"
+surface = "静态/共享根：TLS、HTTP 状态"
+signals = ["rule.http"]
+confidence = "NONE"
+confidence_basis = "传输；无"
+failure = "根非资源；4xx/证书失败不代表实际下载失败"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.storage"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://storage.googleapis.com/"
+surface = "API 根或列表：状态/响应类型"
+signals = ["rule.http", "rule.type"]
+confidence = "NONE"
+confidence_basis = "认证或资源；无"
+failure = "裸根无方法、项目/key 缺失；不补认证"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[targets]]
+id = "google.http204"
+family = "api"
+group = "google.api"
+matrix_group = "E"
+url = "https://www.google.com/generate_204"
+surface = "204：响应体长度及疑似地区头"
+signals = ["rule.http", "rule.empty"]
+confidence = "NONE"
+confidence_basis = "链路；无"
+failure = "门户拦截/新头须另验；不以 204 判国"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.chatgpt"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://status.openai.com/"
+surface = "AI · ChatGPT"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/状态站可独立托管或缓存；不是对话可用性"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.openai-api"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://platform.openai.com/docs/overview"
+surface = "AI · OpenAI API"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/文档迁移；无 key，不测模型、余额或项目"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.claude"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://status.claude.com/"
+surface = "AI · Claude"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/即使状态正常也不能推出用户可进入 Claude"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.claude-api"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://platform.claude.com/docs/en/home"
+surface = "AI · Claude API"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/文档静态分发；模型权限未知"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.perplexity"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://docs.perplexity.ai/"
+surface = "AI · Perplexity"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/文档跳转与搜索后端分离"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.copilot"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://www.microsoft.com/en-us/microsoft-copilot"
+surface = "AI · Copilot"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/URL 已指定页面语言和市场，非服务定位"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.grok"
+family = "ai"
+group = "control.ai"
+matrix_group = "CONTROL"
+url = "https://docs.x.ai/"
+surface = "AI · Grok/xAI"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/不能将文档视作 Grok Web 会话"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.netflix"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://help.netflix.com/legal/termsofuse"
+surface = "媒体 · Netflix"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/法律页与播放服务不同；不取片单、DRM 或播放权"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.disney"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://help.disneyplus.com/"
+surface = "媒体 · Disney+"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/帮助中心有独立路由；不代表订阅可用"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.prime"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://www.primevideo.com/help"
+surface = "媒体 · Prime Video"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/分区版权与账号不在此表面"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.spotify"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://support.spotify.com/"
+surface = "媒体 · Spotify"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/帮助页版次可重定向，不能证明账号市场"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.tiktok"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://support.tiktok.com/"
+surface = "媒体 · TikTok"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/仅记录交接，不能判视频可播放"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.hbomax"
+family = "media"
+group = "control.media"
+matrix_group = "CONTROL"
+url = "https://help.hbomax.com/"
+surface = "媒体 · HBO Max"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/帮助中心不提供授权证据"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.x"
+family = "social"
+group = "control.social"
+matrix_group = "CONTROL"
+url = "https://help.x.com/"
+surface = "社交 · X"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/拒绝原因未知；不可推断封国或封 IP"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.reddit"
+family = "social"
+group = "control.social"
+matrix_group = "CONTROL"
+url = "https://www.redditstatus.com/"
+surface = "社交 · Reddit"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/状态站不是用户流量面的同路对照"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.telegram"
+family = "social"
+group = "control.social"
+matrix_group = "CONTROL"
+url = "https://telegram.org/faq"
+surface = "社交 · Telegram"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/FAQ 不能验证消息协议通道"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.github"
+family = "developer"
+group = "control.developer"
+matrix_group = "CONTROL"
+url = "https://www.githubstatus.com/"
+surface = "开发 · GitHub"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/不能证明登录、Git 或私库能力"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.npm"
+family = "developer"
+group = "control.developer"
+matrix_group = "CONTROL"
+url = "https://status.npmjs.org/"
+surface = "开发 · npm"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/未请求包，不保证下载链"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.pypi"
+family = "developer"
+group = "control.developer"
+matrix_group = "CONTROL"
+url = "https://status.python.org/"
+surface = "开发 · PyPI"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/基础设施状态页，不证明 wheel 交付"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.bing"
+family = "search"
+group = "control.search"
+matrix_group = "CONTROL"
+url = "https://www.bing.com/"
+surface = "搜索 · Bing"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/仅首页，无查询、无地区来源证明"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.rail12306"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://www.12306.cn/"
+surface = "国内 · 12306"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/首页不是购票服务；历史 SSL 失败非本次结果"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.taobao"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://www.taobao.com/"
+surface = "国内 · 淘宝"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/该连接未成功，低/归因；无 HTTP 不能定为地区或平台封禁"
+protected = true
+verification = "NO_HTTP"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.jd"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://www.jd.com/"
+surface = "国内 · 京东"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/企业站交接非商品服务；本次未分段测时延"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.bilibili"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://www.bilibili.com/"
+surface = "国内 · B 站"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/不验证媒体播放及用户地区"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.wechat"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://wx.qq.com/"
+surface = "国内 · 微信网页"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/不扫二维码、不验证账号或会话"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.icbc"
+family = "domestic"
+group = "control.domestic"
+matrix_group = "CONTROL"
+url = "https://www.icbc.com.cn/"
+surface = "国内 · 工行"
+signals = ["rule.http", "rule.redirect"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/只触达公开入口，不访问网银或交易"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.cf-trace"
+family = "cdn"
+group = "control.cdn"
+matrix_group = "CONTROL"
+url = "https://one.one.one.one/cdn-cgi/trace"
+surface = "CDN · Cloudflare trace"
+signals = ["rule.http", "rule.trace"]
+confidence = "HIGH"
+confidence_basis = "仅 CF 的出口映射"
+failure = "高/只描述这一请求：`loc` 是 CF 对出口 IP 的国家映射；`colo` 是处理请求的接入机房 IATA 标识。代理换路或缓存时不可外推；都不是 Google 国家"
+protected = true
+verification = "HTTP_OBSERVED"
+allow_online = false
+safe_default = false
+
+[[controls]]
+id = "control.cf-meta"
+family = "cdn"
+group = "control.cdn"
+matrix_group = "CONTROL"
+url = "https://speed.cloudflare.com/meta"
+surface = "CDN · Cloudflare speed meta"
+signals = ["rule.http", "rule.meta"]
+confidence = "NONE"
+confidence_basis = "无业务国家证据"
+failure = "高/有拒绝响应；`clientIp/country/colo/asn` 此次无可用样本，不能按 TECH-REF 的示例填值。也不索取城市、坐标或邮编"
+protected = true
+verification = "FIELD_UNVERIFIED"
+allow_online = false
+safe_default = false

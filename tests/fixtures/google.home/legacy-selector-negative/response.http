@@ -1,0 +1,5 @@
+HTTP/1.1 200 SYNTHETIC
+Content-Type: text/html
+Content-Length: 66
+
+<html><title>Google</title><input name="region" value="CN"></html>

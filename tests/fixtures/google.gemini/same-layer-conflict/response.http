@@ -1,0 +1,5 @@
+HTTP/1.1 200 SYNTHETIC
+Content-Type: text/html
+Content-Length: 41
+
+<html>,2,1,200,"USA",2,1,200,"CHN"</html>

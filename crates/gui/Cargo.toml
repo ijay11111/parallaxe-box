@@ -1,0 +1,43 @@
+[package]
+name = "parallaxe-gui"
+description = "Parallaxe box 原生 egui/eframe GUI（只消费共享核心事件流，零判定逻辑）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+parallaxe-core = { path = "../core" }
+eframe.workspace = true
+egui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+
+# Web/WASM：离线解释界面 + 剪贴板降级；不使用 tokio 多线程/文件系统。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Navigator",
+    "Clipboard",
+] }
+
+# Android 原生入口：game-activity（与 eframe 的 android-game-activity feature 对齐）。
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["game-activity"] }
+winit = { version = "0.30", default-features = false, features = ["android-game-activity"] }
+
+[dev-dependencies]
+parallaxe-agent = { path = "../agent" }
+image = { version = "0.25", default-features = false, features = ["png"] }

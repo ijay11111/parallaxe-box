@@ -1,0 +1,48 @@
+# 仅保护索引与依赖事实；不含代理、hosts 或防火墙规则。
+schema_version = 1
+default_scope = "UNKNOWN"
+[seeds]
+source = "docs/decisions.md；docs/research/06-blocking.md；docs/architecture/06-dependencies.md"
+# 后缀匹配限完整 DNS 标签，包括根域；不用裸字符串 contains。
+suffixes = ["ggpht.com", "googleapis.com", "googleusercontent.com", "gstatic.com", "gvt1.com", "gvt2.com", "gvt3.com", "xn--ngstr-lra8j.com", "android.com", "google-analytics.com"]
+exact = ["accounts.google.com", "accounts.youtube.com", "myaccount.google.com", "apis.google.com", "android.clients.google.com", "android.apis.google.com", "android.googleapis.com", "connectivitycheck.android.com", "connectivitycheck.gstatic.com", "crl.pki.goog", "ocsp.pki.goog", "pki.google.com", "device-provisioning.googleapis.com", "dl.google.com", "dl-ssl.google.com", "fcm.googleapis.com", "fcm-xmpp.googleapis.com", "gcm-http.googleapis.com", "gcm-xmpp.googleapis.com", "fonts.googleapis.com", "fonts.gstatic.com", "storage.googleapis.com", "notifications.google.com", "ogs.google.com", "omahaproxy.appspot.com", "play.google.com", "www.google.com", "www.gstatic.com", "www.recaptcha.net", "oauth2.googleapis.com", "openidconnect.googleapis.com", "ssl.gstatic.com", "mtalk.google.com", "pay.google.com", "payments.google.com"]
+# 保护谓词 ID，不是通配拦截表达式。语义见 06。
+protected_families = ["google-account-country", "mtalk-label", "mtalk-alt-1-8", "clients-1-6"]
+
+[classifications]
+# 已知被多服务共用的分发主机；不是所有受保护主机都叫 CDN。
+cdn_suffixes = ["gvt1.com", "ggpht.com", "googleusercontent.com", "gstatic.com", "xn--ngstr-lra8j.com"]
+cdn_exact = ["dl.google.com", "dl-ssl.google.com"]
+
+# src 需要 dst。svc:<目录ID>、host:<域名> 或 capability:<具名功能>。
+[[edges]]
+src = "svc:google.drive"
+dst = "host:accounts.google.com"
+kind = "LOGIN"
+source_type = "DIRECT_ANONYMOUS_OBSERVATION"
+source = "docs/research/03-google-matrix.md#google.drive"
+verified_at = 2026-11-21
+
+[[edges]]
+src = "capability:play-download"
+dst = "host:dl.google.com"
+kind = "DOWNLOAD"
+source_type = "OFFICIAL_DOC"
+source = "https://support.google.com/work/android/answer/10513641"
+verified_at = 2026-11-21
+
+[[edges]]
+src = "capability:android-update"
+dst = "host:dl.google.com"
+kind = "UPDATE"
+source_type = "OFFICIAL_DOC"
+source = "https://support.google.com/work/android/answer/10513641"
+verified_at = 2026-11-21
+
+[[edges]]
+src = "svc:google.notebook"
+dst = "host:notebook.google.com"
+kind = "REDIRECT"
+source_type = "DIRECT_ANONYMOUS_OBSERVATION"
+source = "docs/research/03-google-matrix.md#google.notebook"
+verified_at = 2026-11-21

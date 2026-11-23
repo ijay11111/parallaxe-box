@@ -1,0 +1,37 @@
+[package]
+name = "parallaxe-core"
+description = "Parallaxe box 共享只读核心：证据、判定、报告与事件（不依赖 GUI）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+time.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+url.workspace = true
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+
+# Web/WASM 端：tokio 只保留官方支持的特性（无 net / io-std / multi-thread）；
+# comfy-table 关闭 tty（crossterm 在 wasm 上不可用）。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "io-util"] }
+comfy-table = { version = "7", default-features = false }
+
+# 原生端：仅这里启用 net / fs2 / if-addrs / reqwest，不污染 wasm 依赖图。
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+comfy-table.workspace = true
+reqwest.workspace = true
+fs2.workspace = true
+if-addrs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "full"] }
+time.workspace = true

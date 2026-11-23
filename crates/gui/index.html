@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Parallaxe box · Web（只读）</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #11131a; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #c9ccd6;
+    }
+    #parallaxe_canvas { width: 100vw; height: 100vh; touch-action: none; }
+    noscript { padding: 24px; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <canvas id="parallaxe_canvas"></canvas>
+  <noscript>Parallaxe box Web 端需要启用 JavaScript；本端只做离线解释，不发送网络请求。</noscript>
+  <link data-trunk rel="rust" />
+</body>
+</html>

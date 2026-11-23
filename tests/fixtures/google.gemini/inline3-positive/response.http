@@ -1,0 +1,5 @@
+HTTP/1.1 200 SYNTHETIC
+Content-Type: text/html; charset=utf-8
+Content-Length: 95
+
+<html><title>Gemini</title><script>AF_initDataCallback({data:[,2,1,200,"USA"]})</script></html>

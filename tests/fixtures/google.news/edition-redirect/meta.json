@@ -1,0 +1,29 @@
+{
+  "schema": "parallaxe.fixture/v1",
+  "target_id": "google.news",
+  "case": "edition-redirect",
+  "rule_versions": {
+    "rule.http": 1,
+    "rule.redirect": 1,
+    "rule.edition": 1
+  },
+  "recorded_at": "2026-11-21T00:00:00Z",
+  "source_kind": "SYNTHETIC",
+  "source_ref": "assets/signal-rules.toml",
+  "mode": "FIXTURE",
+  "requested_family": "AUTO",
+  "observed_family": "V4",
+  "synthetic_path_id": "path-fixture",
+  "status": 302,
+  "mime": "application/binary",
+  "body_bytes": 0,
+  "complete": true,
+  "truncated": false,
+  "expected": {
+    "state": "REACHABLE_ONLY",
+    "reason": "EDITION_ONLY_NO_EGRESS",
+    "evidence_ids": [],
+    "request_count": 1,
+    "network_request_count": 0
+  }
+}

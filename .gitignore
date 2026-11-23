@@ -1,0 +1,36 @@
+# 编译产物与生成物（不上传）
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+__pycache__/
+*.pyc
+
+# 测试/审计生成产物
+/tests/release-smoke/latest/
+/tests/release-smoke/*-pc-*/
+/tests/release-smoke/*-apple-*/
+/tests/release-smoke/*-linux-*
+tests/fixtures/**/freshness-v1.json
+
+# 不随公开源码发布的目录（历史开发/内部过程/第三方参考素材）
+/sessions/
+/.workbuddy/
+/collab/
+/spec/
+/refs/design-ui/
+/refs/ui-mockups/
+/refs/screenshots/
+
+# 内部过程文档
+/项目介绍.md
+/项目结构与上传规范.md
+/检测方案优化建议-最终版.md
+
+# 审计临时文件
+/_tree.json
+/_remote_*.json

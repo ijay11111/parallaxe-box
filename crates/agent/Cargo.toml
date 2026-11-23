@@ -1,0 +1,14 @@
+[package]
+name = "parallaxe-agent"
+description = "Parallaxe box NDJSON stdio agent（无监听端口，无远程 shell）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+parallaxe-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio = { workspace = true }

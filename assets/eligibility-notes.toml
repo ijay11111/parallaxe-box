@@ -1,0 +1,189 @@
+schema = "parallaxe.eligibility/v1"
+# 能力边界说明（非检测结果）：只提醒“网络可达 ≠ 订阅/完整功能可用”。
+# 本软件是匿名网络层检测工具，不读取、不验证、不推断任何账号状态
+# （账号国家/订阅资格/年龄/付款档案/家庭组/组织策略均不在检测范围）。
+# 每条 note 都带官方链接，由用户自行核对；verified 固定为 false（加载器写入）。
+# 这些说明不参与 state/reason 判定，不进服务矩阵的判定列，只作解释性文字。
+
+[[notes]]
+id = "gate.account-type-personal"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.account_type_personal"
+source_url = "https://support.google.com/googleone/answer/9080668"
+families = ["ai", "workspace", "education", "media", "store"]
+targets = ["google.one", "google.ai-plans", "google.premium"]
+
+[[notes]]
+id = "gate.region-list-independent"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.region_list_independent"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai", "identity", "workspace", "education", "developer", "cloud", "media", "store", "content", "search", "api", "static"]
+targets = ["google.one", "google.ai-plans"]
+
+[[notes]]
+id = "gate.age-13-plus"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.age_13_plus"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai", "identity", "workspace", "education", "media", "store"]
+
+[[notes]]
+id = "gate.age-18-plus-ai"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.age_18_plus_ai"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai", "education", "developer"]
+targets = ["google.gemini", "google.gemini-mobile", "google.studio", "google.flow", "google.notebook"]
+
+[[notes]]
+id = "gate.network-modifier"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.network_modifier"
+source_url = "https://support.google.com/googleone/answer/9080668"
+families = ["ai", "identity", "workspace", "education", "media", "store", "cloud", "api"]
+targets = ["google.one", "google.ai-plans", "google.premium", "google.play"]
+
+[[notes]]
+id = "gate.payment-profile-country"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.payment_profile_country"
+source_url = "https://support.google.com/googleplay/answer/7431675"
+families = ["ai", "developer", "cloud", "media", "store", "api"]
+targets = ["google.one", "google.ai-plans", "google.play"]
+
+[[notes]]
+id = "gate.third-party-subscription"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.third_party_subscription"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai", "media", "store"]
+targets = ["google.one", "google.ai-plans", "google.premium"]
+
+[[notes]]
+id = "gate.family-group"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.family_group"
+source_url = "https://support.google.com/googleone/answer/9080668"
+families = ["ai", "media", "store"]
+targets = ["google.one", "google.ai-plans", "google.premium"]
+
+[[notes]]
+id = "gate.plan-content-differences"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.plan_content_differences"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai", "media"]
+targets = ["google.ai-plans", "google.premium", "google.yt-music", "google.youtube", "google.tv"]
+
+[[notes]]
+id = "gate.workspace-admin-ou"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.workspace_admin_ou"
+source_url = "https://support.google.com/a/answer/14571493"
+families = ["workspace", "education"]
+targets = ["google.docs", "google.drive", "google.gmail", "google.meet", "google.chat", "google.admin", "google.console", "google.notebook"]
+
+[[notes]]
+id = "gate.education-under-18"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.education_under_18"
+source_url = "https://support.google.com/a/answer/16350447"
+families = ["education", "workspace"]
+targets = ["google.classroom", "google.edu-meet", "google.scholar", "google.ccuk", "google.studio"]
+
+[[notes]]
+id = "gate.api-billing"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.api_billing"
+source_url = "https://ai.google.dev/gemini-api/docs/pricing"
+families = ["developer", "cloud", "api"]
+targets = ["google.gen-api", "google.vertex-api", "google.googleapis", "google.fonts-api", "google.cloud", "google.vertex", "google.firebase", "google.console", "google.dev", "google.api-explorer"]
+
+[[notes]]
+id = "gate.api-free-tier-limits"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.api_free_tier_limits"
+source_url = "https://ai.google.dev/gemini-api/docs/rate-limits"
+families = ["developer", "cloud", "api"]
+targets = ["google.gen-api", "google.vertex-api", "google.googleapis", "google.ai-plans", "google.studio"]
+
+[[notes]]
+id = "gate.play-country"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.play_country"
+source_url = "https://support.google.com/googleplay/answer/7431675"
+families = ["store"]
+targets = ["google.play", "google.play-detail", "google.play-books", "google.play-games", "google.play-movies", "google.play-console", "google.play-country", "google.play-apps", "google.play-api", "google.books", "google.shopping", "google.merchant", "google.marketplace"]
+
+[[notes]]
+id = "gate.play-developer-verification"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.play_developer_verification"
+source_url = "https://support.google.com/googleplay/android-developer/answer/14151465"
+families = ["developer", "store"]
+targets = ["google.play-console", "google.console"]
+
+[[notes]]
+id = "gate.media-travel-region"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.media_travel_region"
+source_url = "https://support.google.com/youtube/answer/6307365"
+families = ["media"]
+targets = ["google.youtube", "google.yt-music", "google.premium", "google.tv", "google.yt-studio", "google.video"]
+
+[[notes]]
+id = "gate.search-region-differences"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.search_region_differences"
+source_url = "https://support.google.com/websearch/answer/873"
+families = ["search", "content"]
+targets = ["google.search", "google.images", "google.maps", "google.flights", "google.travel", "google.news", "google.books", "google.arts", "google.patents", "google.trends", "google.finance", "google.alerts"]
+
+[[notes]]
+id = "gate.maps-api-billing"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.maps_api_billing"
+source_url = "https://developers.google.com/maps/documentation/javascript/cloud-setup"
+families = ["search", "developer", "api"]
+targets = ["google.maps", "google.apis", "google.googleapis"]
+
+[[notes]]
+id = "gate.identity-risk"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.identity_risk"
+source_url = "https://support.google.com/accounts/answer/6009563"
+families = ["identity"]
+targets = ["google.accounts", "google.signin-id", "google.signin-v3", "google.signinoptions", "google.oauth", "google.openid", "google.myaccount", "google.security", "google.gsi", "google.recaptcha", "google.yt-accounts"]
+
+[[notes]]
+id = "gate.cloud-starter-tier"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.cloud_starter_tier"
+source_url = "https://cloud.google.com/free/docs/free-cloud-features"
+families = ["cloud", "developer"]
+targets = ["google.cloud", "google.storage", "google.vertex-api", "google.fonts-api", "google.firebase"]
+
+[[notes]]
+id = "gate.ai-plan-entitlement"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.ai_plan_entitlement"
+source_url = "https://support.google.com/googleone/answer/16476811"
+families = ["ai"]
+targets = ["google.ai-plans", "google.gemini", "google.gemini-mobile", "google.gemini-doc", "google.notebook", "google.studio", "google.flow", "google.flow-current", "google.models", "google.gen-api", "google.skills", "google.labs", "google.vertex", "google.vertex-api"]
+
+[[notes]]
+id = "gate.antigravity-enterprise"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.antigravity_enterprise"
+source_url = "https://antigravity.google/"
+families = ["developer", "ai"]
+targets = ["google.labs", "google.ai-plans"]
+
+[[notes]]
+id = "gate.static-no-gate"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.static_no_gate"
+source_url = "https://cloud.google.com/cdn/docs/overview"
+families = ["static"]
+targets = ["google.gstatic", "google.ggpht", "google.ssl-gstatic", "google.lh3", "google.usercontent", "google.fonts"]
