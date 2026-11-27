@@ -175,8 +175,14 @@ fn selftest_shortcut_and_help_exit_zero() {
     let (code, stdout, _) = run(&["--help"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("parallaxe"));
+    // 无参数：GUI 构建默认进入图形界面（双击 exe 的体验）；headless 构建仍报用法错误。
+    // GUI 在无显示环境可能立即退出，但退出码应为 0（成功进入启动路径）。
     let (code, _, _) = run(&[]);
-    assert_eq!(code, 1, "缺少子命令属于用法错误");
+    if cfg!(feature = "gui") {
+        assert_eq!(code, 0, "GUI 构建无参数应默认进入 GUI");
+    } else {
+        assert_eq!(code, 1, "headless 构建缺少子命令属于用法错误");
+    }
 }
 
 #[test]

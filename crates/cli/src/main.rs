@@ -2131,7 +2131,15 @@ fn main() -> ExitCode {
     };
     let _ = LOCALE.set(Locale::parse(&cli.locale).unwrap_or_default());
     // GUI 必须在操作系统主线程直接启动，避免嵌套 tokio 运行时或跨平台窗口事件循环冲突。
-    if !cli.selftest && matches!(cli.command, Some(Command::Gui)) {
+    // 无参数运行（双击 exe）默认进入 GUI：对普通用户而言双击打不开是严重体验缺陷；
+    // 显式 --selftest / --help / 任何子命令仍保持原语义。
+    // Android / iOS 无桌面 GUI，无参数时保留原来的“缺少子命令”提示。
+    #[cfg(all(feature = "gui", not(any(target_os = "android", target_os = "ios"))))]
+    let wants_gui = !cli.selftest
+        && matches!(cli.command, None | Some(Command::Gui));
+    #[cfg(not(all(feature = "gui", not(any(target_os = "android", target_os = "ios")))))]
+    let wants_gui = matches!(cli.command, Some(Command::Gui));
+    if wants_gui {
         return match load_registry(&cli) {
             Ok(registry) => run_gui_command(registry),
             Err(error) => print_error(&error),
