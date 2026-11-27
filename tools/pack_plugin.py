@@ -261,7 +261,10 @@ def pack(directory: Path, out_dir: Path) -> tuple[Path, Path]:
         archive.writestr(info, raw)
     digest = hashlib.sha256(raw).hexdigest()
     sidecar = bundle.with_name(bundle.name + ".sha256")
-    sidecar.write_text(f"{digest}  {bundle.name}\n", encoding="ascii")
+    # 显式 LF：Windows 上 Path.write_text 默认转成 CRLF，会让 Linux 的
+    # `sha256sum -c` 把 \r 当成文件名的一部分而校验失败。
+    with sidecar.open("w", encoding="ascii", newline="\n") as handle:
+        handle.write(f"{digest}  {bundle.name}\n")
     return bundle, sidecar
 
 

@@ -73,11 +73,7 @@ fn adminission_is_denied_for_all_without_grants() {
 #[test]
 fn selection_sizes_match_profiles() {
     let registry = registry();
-    let cases = [
-        ("simple", 16),
-        ("google-all", 107),
-        ("full", 135),
-    ];
+    let cases = [("simple", 16), ("google-all", 107), ("full", 135)];
     for (profile, expected) in cases {
         let selection = registry
             .select(Some(profile), &[], &[], false)

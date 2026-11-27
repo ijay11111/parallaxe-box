@@ -649,11 +649,11 @@ pub fn country_claim(evidence: &Evidence) -> Option<String> {
     if !matches!(
         evidence.claim.as_str(),
         "inline3_country"
-        | "trace.loc"
-        | "meta.country"
-        | "tos_region"
-        | "one_region"
-        | "store_region"
+            | "trace.loc"
+            | "meta.country"
+            | "tos_region"
+            | "one_region"
+            | "store_region"
     ) {
         return None;
     }

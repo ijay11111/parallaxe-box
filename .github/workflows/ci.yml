@@ -152,7 +152,7 @@ jobs:
           key: wasm32
 
       - name: 拉取锁定依赖
-        run: cargo fetch --locked --target wasm32-unknown-unknown
+        run: cargo fetch --locked  # 拉全部依赖（含 host 构建依赖），后续 --offline 才不缺包
 
       - name: core 的 wasm32 依赖图（无 mio/fs2/if-addrs/reqwest）
         run: cargo check -p parallaxe-core --target wasm32-unknown-unknown --offline --locked
@@ -192,7 +192,7 @@ jobs:
           key: android-arm64
 
       - name: 拉取锁定依赖
-        run: cargo fetch --locked --target aarch64-linux-android
+        run: cargo fetch --locked  # 拉全部依赖（含 host 构建依赖），后续 --offline 才不缺包
 
       - name: 检查 android_main / cdylib 编译
         env:
@@ -280,7 +280,11 @@ jobs:
             python3 tools/pack_plugin.py roundtrip "$dir" --out-dir /tmp/two
           done
           diff -r /tmp/one /tmp/two
-          cd /tmp/one && sha256sum -c ./*.plugin.sha256
+          # sidecar 记录的是 manifest 内容 digest（pack_plugin.py 的设计），
+          # 不是 ZIP 容器文件 digest；用工具的 verify 校验，不能用 sha256sum -c。
+          for bundle in /tmp/one/*.plugin; do
+            python3 tools/pack_plugin.py verify "$bundle"
+          done
 
       - name: 篡改必须被发现（负向用例）
         run: |

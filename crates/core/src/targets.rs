@@ -197,7 +197,9 @@ impl Target {
 
     /// 本目标生效的最大跳转次数：注册行优先，否则用全局默认值。
     pub fn max_redirects(&self) -> u32 {
-        self.raw.max_redirects.unwrap_or(self.defaults.max_redirects)
+        self.raw
+            .max_redirects
+            .unwrap_or(self.defaults.max_redirects)
     }
 
     /// 注册 URL 的路径（含前导斜杠，不含查询）。
@@ -1132,7 +1134,8 @@ fn validate_targets(file: &TargetsFile, rules: &RulesFile) -> Result<(), ConfigE
             .map_err(|message| ConfigError::field(location.clone(), message))?;
         if let Some(query) = url.query.as_deref() {
             // 只接受注册表中已固定的常量查询；不接受任意查询串。
-            let allowed = (raw.id == "google.play-detail" && query == "id=com.google.android.youtube")
+            let allowed = (raw.id == "google.play-detail"
+                && query == "id=com.google.android.youtube")
                 || (raw.id == "google.gmail" && query == "id=com.google.android.gm");
             if !allowed {
                 return Err(ConfigError::field(location.clone(), "未登记的查询串"));

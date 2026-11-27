@@ -20,7 +20,6 @@ use crate::targets::{Budget, HARD_LIMITS};
 /// 盒装 future，便于以 `dyn Transport` 注入离线实现。
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-
 /// 一次传输请求（已绑定目标与运行）。
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
@@ -397,7 +396,10 @@ impl HttpTransport {
             for hop in 0..=max_hops {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(TransportError { kind: TransportErrorKind::Timeout, stage: "HTTP" });
+                    return Err(TransportError {
+                        kind: TransportErrorKind::Timeout,
+                        stage: "HTTP",
+                    });
                 }
                 let mut response = client
                     .get(&current_url)
@@ -469,7 +471,9 @@ impl HttpTransport {
                 // 只跟 HTTPS、不登录、无 Cookie，跳转链记入 attempts。
                 let next = location.as_deref().and_then(|loc| {
                     let joined = reqwest::Url::parse(loc)
-                        .or_else(|_| reqwest::Url::parse(&current_url).and_then(|base| base.join(loc)))
+                        .or_else(|_| {
+                            reqwest::Url::parse(&current_url).and_then(|base| base.join(loc))
+                        })
                         .ok()?;
                     (joined.scheme() == "https").then_some(joined.to_string())
                 });
@@ -532,7 +536,11 @@ impl Transport for HttpTransport {
             let base_timeout = request.timeout_ms.min(HARD_LIMITS.max_request_timeout_ms);
             let redirect_budget = u64::from(request.max_redirects)
                 .saturating_mul(base_timeout)
-                .min(HARD_LIMITS.max_request_timeout_ms.saturating_sub(base_timeout));
+                .min(
+                    HARD_LIMITS
+                        .max_request_timeout_ms
+                        .saturating_sub(base_timeout),
+                );
             let deadline = Instant::now()
                 + Duration::from_millis(base_timeout.saturating_add(redirect_budget));
             // IPv6/自动族：最多等 8s 就切 IPv4，避免“IPv6 假死”吃满整个单请求预算。
@@ -575,7 +583,6 @@ impl Transport for HttpTransport {
         })
     }
 }
-
 
 /// wasm 端传输降级：浏览器 fetch 需要 GUI 侧的异步桥接；本 crate 只返回
 /// 明确的离线解释失败，绝不改判定语义（避免把“未实现”伪装成网络错误）。

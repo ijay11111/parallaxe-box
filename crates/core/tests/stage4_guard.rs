@@ -129,8 +129,14 @@ fn shared_host_stops_at_dependency_conflict() {
     let plan = &preview.plan;
 
     assert!(plan.closure_complete);
-    assert_eq!(plan.reasons, vec!["BLOCK_DEFERRED_DEPENDENCY_CONFLICT".to_string()]);
-    assert_eq!(plan.primary_reason.as_deref(), Some("BLOCK_DEFERRED_DEPENDENCY_CONFLICT"));
+    assert_eq!(
+        plan.reasons,
+        vec!["BLOCK_DEFERRED_DEPENDENCY_CONFLICT".to_string()]
+    );
+    assert_eq!(
+        plan.primary_reason.as_deref(),
+        Some("BLOCK_DEFERRED_DEPENDENCY_CONFLICT")
+    );
     assert!(!plan.safe_to_apply);
     assert!(plan
         .impact_closure
