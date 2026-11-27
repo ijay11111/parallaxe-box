@@ -94,6 +94,7 @@ async fn report_carries_notes_without_changing_verdict() {
 fn empty_notes_are_omitted_for_backward_compatibility() {
     let mut report = Report::new("0.1.0", "2026-11-22T00:00:00Z", "run-note", Mode::Fixture);
     let mut result = parallaxe_core::contracts::ResultRecord {
+        destination: Default::default(),
         target: "synthetic".to_string(),
         state: parallaxe_core::State::Unknown,
         reason: None,

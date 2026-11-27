@@ -29,6 +29,6 @@ core 内，箭头表示“左侧依赖右侧”，不是网络数据流：
 
 准入在两个时刻执行：`targets` 展开选集后区分“注册/被选/获准”，`probe` 在交给传输**之前**复查请求描述、有效期、运行预算和取消状态。没有许可时连 DNS 也不发；系统路径探测同样不能借页面预检偷发回显请求。当前内嵌许可为空，默认/自选/full 都会展示未覆盖原因。裸主机匹配、用户优先级、历史 200、跳转、改 `targets.toml` 均不能扩权。
 
-**目录说明**：按 [ADR-004](../../docs/decisions.md)，未来 workspace 根即 `G:/test-ip` 本身，不建同名子目录。本轮实际提供 `docs/architecture/` 与 `assets/`；将来 `crates/{core,cli,agent,gui}/`、`tests/fixtures/` 是职责边界，不在此创建项目骨架。默认 assets（含独立规则表）和批准的离线 fixture 以后嵌入二进制，优先级示例不当成用户配置。离线运行使用同一判定门面、合成样本提供者和虚拟时钟；不给它 HTTP 客户端、resolver、系统状态写入器或在线回退。fixture 只替代输入，不替代 `verdict`。
+**目录说明**：仓库根目录是 Cargo workspace。`crates/` 下的四个成员共享 `assets/` 中的内置数据和 `tests/fixtures/` 中的离线样本。离线运行使用同一判定门面、合成样本提供者和虚拟时钟；不给它 HTTP 客户端、resolver、系统状态写入器或在线回退。fixture 只替代输入，不替代 `verdict`。
 
 **阶段 2 验收办法**：无 GUI 构建与依赖树中 core 无 egui/eframe/clap；适配器只通过门面使用契约，搜不到自写的国家判据或退出码表。对被拒目标注入计数传输器，应是零调用；对同一 fixture 的三种订阅比较序号、判定、覆盖和请求计数。依赖反向、需要显示器才能 selftest、或 GUI 与 JSON 任一不同，均退回。

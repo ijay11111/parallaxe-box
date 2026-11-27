@@ -4,7 +4,7 @@
   "case": "login-handoff",
   "rule_versions": {
     "rule.http": 1,
-    "rule.redirect": 1
+    "rule.inline3": 1
   },
   "recorded_at": "2026-11-21T00:00:00Z",
   "source_kind": "SYNTHETIC",

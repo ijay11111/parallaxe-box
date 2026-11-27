@@ -26,6 +26,7 @@ impl Transport for SlowTransport {
         Box::pin(async move {
             tokio::time::sleep(delay).await;
             FetchOutcome {
+                destination: Default::default(),
                 status: Some(200),
                 content_type: Some("text/html".to_string()),
                 location: None,

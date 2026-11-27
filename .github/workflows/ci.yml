@@ -80,8 +80,14 @@ jobs:
       - name: 纯无头构建检查
         run: cargo check -p parallaxe-cli --no-default-features --all-targets --offline --locked
 
-      - name: 全工作区测试
+      - name: 全工作区测试（源码默认零发包）
         run: cargo test --workspace --offline --locked
+
+      - name: 发行包模式核心边界
+        run: cargo test -p parallaxe-core --test stage13_mode_boundary --features distribution-release --offline --locked
+
+      - name: 发行包模式 GUI 边界
+        run: cargo test -p parallaxe-gui --test stage13_mode_boundary --features distribution-release --offline --locked
 
       - name: 结果导出（md / txt）烟雾
         run: |
@@ -151,8 +157,11 @@ jobs:
       - name: core 的 wasm32 依赖图（无 mio/fs2/if-addrs/reqwest）
         run: cargo check -p parallaxe-core --target wasm32-unknown-unknown --offline --locked
 
-      - name: GUI 离线解释入口
+      - name: GUI 离线解释入口（源码）
         run: cargo check -p parallaxe-gui --target wasm32-unknown-unknown --offline --locked
+
+      - name: GUI 离线解释入口（发行包标记）
+        run: cargo check -p parallaxe-gui --target wasm32-unknown-unknown --offline --locked --features distribution-release
 
   android-check:
     name: Android 入口构建检查（arm64，不出 APK）
@@ -190,6 +199,28 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: cargo ndk -t arm64-v8a check -p parallaxe-gui --offline --locked
 
+      - name: 检查 android_main / cdylib 编译（发行包标记）
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: cargo ndk -t arm64-v8a check -p parallaxe-gui --offline --locked --features distribution-release
+
+      - name: 移动端必须没有插件面（编译期探针必须失败）
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -eu
+          probe=crates/core/examples/plugin_gate_probe.rs
+          trap 'rm -f "$probe"' EXIT
+          cat > "$probe" <<'RS'
+          fn main() {
+              println!("{}", parallaxe_core::plugins::SCHEMA);
+          }
+          RS
+          if cargo ndk -t arm64-v8a check -p parallaxe-core --example plugin_gate_probe --offline --locked; then
+            echo "Android 构建里出现了 plugins 模块：移动端零插件面的约定被破坏" >&2
+            exit 1
+          fi
+
   gui-doctor:
     name: 截图工具自检（Windows 独立门禁）
     runs-on: windows-latest
@@ -217,6 +248,63 @@ jobs:
 
       - name: 截图工具严格自检
         run: python tools/capture_gui.py --doctor --strict
+
+  plugins:
+    name: 插件示例 / 打包 / 第三方声明
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: plugins
+
+      - name: 拉取锁定依赖
+        run: cargo fetch --locked
+
+      - name: 声明与 manifest 逐字节一致
+        run: python3 tools/verify_plugins.py
+
+      - name: 打包往返 + 确定性（同一目录两次必须同字节）
+        run: |
+          set -eu
+          rm -rf /tmp/one /tmp/two
+          for dir in plugins/samples/*/; do
+            python3 tools/pack_plugin.py roundtrip "$dir" --out-dir /tmp/one
+            python3 tools/pack_plugin.py roundtrip "$dir" --out-dir /tmp/two
+          done
+          diff -r /tmp/one /tmp/two
+          cd /tmp/one && sha256sum -c ./*.plugin.sha256
+
+      - name: 篡改必须被发现（负向用例）
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import pathlib, zipfile
+          src = pathlib.Path("/tmp/one/sample.light.report-badge.plugin")
+          with zipfile.ZipFile(src) as archive:
+              raw = archive.read("manifest.json")
+          changed = raw.replace(b'"1.0.0"', b'"1.0.1"')
+          assert changed != raw, "the negative case changed nothing"
+          dst = pathlib.Path("/tmp/one/tamper.plugin")
+          with zipfile.ZipFile(dst, "w") as archive:
+              archive.writestr("manifest.json", changed)
+          pathlib.Path("/tmp/one/tamper.plugin.sha256").write_text(
+              "0" * 64 + "  tamper.plugin\n", encoding="ascii")
+          PY
+          if python3 tools/pack_plugin.py verify /tmp/one/tamper.plugin; then
+            echo "篡改后的插件包被接受了" >&2
+            exit 1
+          fi
+
+      - name: Rust 侧契约测试（解析 / 校验 / 哈希 / 轻重形态）
+        run: cargo test -p parallaxe-core --offline --locked --test plugin_samples
 
   build:
     name: 构建 ${{ matrix.target }}
@@ -288,7 +376,7 @@ jobs:
       - name: 构建纯无头单文件（硬门禁）
         run: >
           cargo build --release --locked --offline --target ${{ matrix.target }}
-          -p parallaxe-cli --no-default-features
+          -p parallaxe-cli --no-default-features --features distribution-release
 
       - name: 另存无头产物（避免被 GUI 构建覆盖）
         shell: bash
@@ -304,7 +392,7 @@ jobs:
         if: matrix.gui == 'true'
         run: >
           cargo build --release --locked --offline --target ${{ matrix.target }}
-          -p parallaxe-cli
+          -p parallaxe-cli --features distribution-release
 
       - name: 输出产物信息
         shell: bash
@@ -322,7 +410,7 @@ jobs:
           PY=python3
           if [ "${{ runner.os }}" = "Windows" ]; then PY=python; fi
           "$PY" tests/release-smoke/release_smoke.py \
-            --bin "$BIN" --no-build --no-cargo-tests \
+            --bin "$BIN" --no-build --no-cargo-tests --require-distribution-release \
             --out "tests/release-smoke/${{ matrix.target }}"
 
       - name: 上传构建产物与烟雾报告

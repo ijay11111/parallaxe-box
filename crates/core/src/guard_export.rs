@@ -24,9 +24,6 @@ pub const EXPORT_SCHEMA: &str = "parallaxe.guard-export/v1";
 /// 整包替换的强警示（导出界面与文档必须原样展示）。
 pub const FULL_MODE_WARNING: &str = "整包替换会覆盖你原有的分流规则，可能导致其他流量异常；请先备份你的配置。仅在用户主动选择时使用，本工具不替你替换配置。";
 
-const REASON_SHARED_CDN: &str = "GUARD_DEFERRED_SHARED_CDN";
-const REASON_DEPENDENCY_CONFLICT: &str = "BLOCK_DEFERRED_DEPENDENCY_CONFLICT";
-
 /// 导出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleFormat {
@@ -99,6 +96,7 @@ pub struct ExportArtifact {
 /// 导出清单（JSON 元数据；文件由调用方落盘或复制到剪贴板）。
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportBundle {
+    pub warning_codes: Vec<String>,
     pub schema: String,
     pub plan_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,6 +138,9 @@ pub struct ExportRequest<'a> {
     pub forensic_pause: Option<String>,
 }
 
+/// 切换为 false 后，手动导出也要求整个计划可安全应用。
+const ALLOW_MANUAL_NO_SAFE_BLOCK: bool = true;
+
 /// 校验并渲染导出。
 pub fn export_rules(request: ExportRequest<'_>) -> Result<ExportBundle, ExportRefusal> {
     let plan = request.plan;
@@ -161,20 +162,17 @@ pub fn export_rules(request: ExportRequest<'_>) -> Result<ExportBundle, ExportRe
             "没有通过判定与可信度门槛的候选目标。",
         ));
     }
-    for blocked in [
-        REASON_SHARED_CDN,
-        REASON_DEPENDENCY_CONFLICT,
-        reason::PROTECTED_HOST,
-        reason::BUDGET_EXHAUSTED,
-    ] {
-        if plan.reasons.iter().any(|item| item == blocked) {
-            return Err(ExportRefusal::new(
-                "EXPORT_CONFLICT",
-                format!("存在未解除的闸门原因 {blocked}：保护域、共享 CDN、依赖冲突或预算异常时不得导出。"),
-            ));
-        }
+    // NO_SAFE_BLOCK 仍沿用仅供手动导出的策略。其余原因（含未来新增原因）一律拒绝。
+    if let Some(blocked) = plan
+        .reasons
+        .iter()
+        .find(|code| code.as_str() != reason::NO_SAFE_BLOCK)
+    {
+        return Err(ExportRefusal::new(
+            "EXPORT_CONFLICT",
+            format!("未解除的闸门原因 {blocked}：拒绝导出。"),
+        ));
     }
-
     // 只导出候选目标自身的精确 FQDN；闭包里的关联主机不进入阻断清单。
     let mut domains = BTreeSet::new();
     let mut omitted = Vec::new();
@@ -205,6 +203,20 @@ pub fn export_rules(request: ExportRequest<'_>) -> Result<ExportBundle, ExportRe
                 "候选里没有可导出的精确 FQDN（已省略：{}）。",
                 omitted.join(", ")
             ),
+        ));
+    }
+    if !plan.affected_shared_paths.is_empty() {
+        return Err(ExportRefusal::new(
+            "EXPORT_CONFLICT",
+            "影响闭包包含受保护或共享的路径。",
+        ));
+    }
+
+    let manual_warning = plan.reasons.iter().any(|r| r == reason::NO_SAFE_BLOCK);
+    if !ALLOW_MANUAL_NO_SAFE_BLOCK && (!plan.safe_to_apply || manual_warning) {
+        return Err(ExportRefusal::new(
+            "EXPORT_NOT_SAFE",
+            "导出需要可安全应用的计划。",
         ));
     }
     let domains: Vec<String> = domains.into_iter().collect();
@@ -304,6 +316,11 @@ pub fn export_rules(request: ExportRequest<'_>) -> Result<ExportBundle, ExportRe
         generated_at: request.generated_at,
         domains,
         artifacts,
+        warning_codes: if manual_warning {
+            vec!["EXPORT_WARNING_NO_SAFE_BLOCK".into()]
+        } else {
+            Vec::new()
+        },
         warnings,
         applied: false,
         note: "导出未写入系统：没有回环服务、没有临时订阅端口，也没有改动你的代理配置。"
@@ -495,7 +512,7 @@ mod tests {
     #[test]
     fn provider_export_only_contains_exact_fqdn() {
         let registry = Registry::embedded().unwrap();
-        let plan = plan(vec!["google.gemini"], vec!["gemini.google.com"], vec![]);
+        let plan = plan(vec!["google.gemini"], vec!["support.google.com"], vec![]);
         let bundle = export_rules(request(
             &registry,
             &plan,
@@ -503,12 +520,12 @@ mod tests {
             ExportMode::Provider,
         ))
         .expect("export");
-        assert_eq!(bundle.domains, vec!["gemini.google.com"]);
+        assert_eq!(bundle.domains, vec!["support.google.com"]);
         assert_eq!(bundle.artifacts.len(), 3);
         let provider = &bundle.artifacts[0].content;
         assert!(provider.contains("payload:"));
-        assert!(provider.contains("  - gemini.google.com"));
-        assert!(!provider.contains("1.1.1.1"));
+        assert!(provider.contains("  - support.google.com"));
+        assert!(!provider.contains("192.0.2.1"));
         let merge = &bundle.artifacts[1].content;
         assert!(merge.contains("RULE-SET,parallaxe-block,REJECT"));
         assert!(merge.contains("SAFE_PATHS"));
@@ -522,9 +539,23 @@ mod tests {
     }
 
     #[test]
+    fn manual_export_exposes_machine_warning_in_both_modes() {
+        let registry = Registry::embedded().unwrap();
+        let plan = plan(
+            vec!["google.gemini"],
+            vec!["support.google.com"],
+            vec![reason::NO_SAFE_BLOCK],
+        );
+        for mode in [ExportMode::Full, ExportMode::Provider] {
+            let bundle = export_rules(request(&registry, &plan, RuleFormat::Clash, mode)).unwrap();
+            assert_eq!(bundle.warning_codes, ["EXPORT_WARNING_NO_SAFE_BLOCK"]);
+            assert!(!bundle.applied);
+        }
+    }
+    #[test]
     fn full_mode_is_explicitly_warned() {
         let registry = Registry::embedded().unwrap();
-        let plan = plan(vec!["google.gemini"], vec!["gemini.google.com"], vec![]);
+        let plan = plan(vec!["google.gemini"], vec!["support.google.com"], vec![]);
         let bundle = export_rules(request(
             &registry,
             &plan,
@@ -544,7 +575,7 @@ mod tests {
     #[test]
     fn singbox_and_domainlist_exports_are_plain_fqdn_lists() {
         let registry = Registry::embedded().unwrap();
-        let plan = plan(vec!["google.gemini"], vec!["gemini.google.com"], vec![]);
+        let plan = plan(vec!["google.gemini"], vec!["support.google.com"], vec![]);
         let singbox = export_rules(request(
             &registry,
             &plan,
@@ -555,7 +586,7 @@ mod tests {
         assert_eq!(singbox.artifacts.len(), 2);
         let parsed: serde_json::Value =
             serde_json::from_str(&singbox.artifacts[0].content).expect("valid json");
-        assert_eq!(parsed["rules"][0]["domain"][0], "gemini.google.com");
+        assert_eq!(parsed["rules"][0]["domain"][0], "support.google.com");
         let snippet: serde_json::Value =
             serde_json::from_str(&singbox.artifacts[1].content).expect("valid json");
         assert_eq!(snippet["route"]["rules"][0]["action"], "reject");
@@ -566,7 +597,7 @@ mod tests {
             ExportMode::Provider,
         ))
         .expect("export");
-        assert_eq!(list.artifacts[0].content, "gemini.google.com\n");
+        assert_eq!(list.artifacts[0].content, "support.google.com\n");
     }
 
     #[test]
@@ -574,7 +605,7 @@ mod tests {
         let registry = Registry::embedded().unwrap();
         let conflict = plan(
             vec!["google.gemini"],
-            vec!["gemini.google.com"],
+            vec!["support.google.com"],
             vec!["GUARD_DEFERRED_SHARED_CDN"],
         );
         assert_eq!(
@@ -588,6 +619,19 @@ mod tests {
             .code,
             "EXPORT_CONFLICT"
         );
+        for mode in [ExportMode::Provider, ExportMode::Full] {
+            let unrecognized = plan(
+                vec!["google.gemini"],
+                vec!["support.google.com"],
+                vec!["UNREVIEWED_GATE"],
+            );
+            assert_eq!(
+                export_rules(request(&registry, &unrecognized, RuleFormat::Clash, mode))
+                    .unwrap_err()
+                    .code,
+                "EXPORT_CONFLICT"
+            );
+        }
         let unknown = plan(vec!["not.in.catalog"], vec!["nope.example"], vec![]);
         assert_eq!(
             export_rules(request(
@@ -600,7 +644,7 @@ mod tests {
             .code,
             "EXPORT_NO_FQDN"
         );
-        let normal = plan(vec!["google.gemini"], vec!["gemini.google.com"], vec![]);
+        let normal = plan(vec!["google.gemini"], vec!["support.google.com"], vec![]);
         let mut req = request(&registry, &normal, RuleFormat::Clash, ExportMode::Provider);
         req.forensic_pause = Some("ROUTE_INCONSISTENT".to_string());
         assert_eq!(
@@ -625,11 +669,11 @@ mod tests {
 
     #[test]
     fn fqdn_validation_rejects_ip_and_non_fqdn() {
-        assert!(valid_fqdn("gemini.google.com"));
+        assert!(valid_fqdn("support.google.com"));
         assert!(valid_fqdn("a-b.example.co.uk"));
-        assert!(!valid_fqdn("1.2.3.4"));
+        assert!(!valid_fqdn("198.51.100.4"));
         assert!(!valid_fqdn("2001:db8::1"));
-        assert!(!valid_fqdn("https://gemini.google.com"));
+        assert!(!valid_fqdn("https://support.google.com"));
         assert!(!valid_fqdn("*.google.com"));
         assert!(!valid_fqdn("localhost"));
         assert!(!valid_fqdn("-bad.example.com"));

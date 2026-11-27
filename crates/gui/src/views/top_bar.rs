@@ -8,7 +8,7 @@
 use crate::icons::{paint_icon, IconKind};
 use crate::theme::{
     lerp_color, DensityMode, Palette, ThemeMode, FONT_BODY, FONT_META, FONT_TITLE, RADIUS_MD,
-    RADIUS_SM, SPACE_1, SPACE_2, SPACE_3,
+    RADIUS_SM, SPACE_1, SPACE_2,
 };
 use crate::views::UiAction;
 use egui::{
@@ -17,6 +17,7 @@ use egui::{
 };
 use parallaxe_core::i18n::{translate, Locale};
 
+#[allow(clippy::too_many_arguments)]
 pub fn title(
     ctx: &Context,
     p: Palette,
@@ -24,14 +25,24 @@ pub fn title(
     density: DensityMode,
     theme: ThemeMode,
     locale: Locale,
+    top_safe_inset: f32,
     actions: &mut Vec<UiAction>,
 ) {
+    let screen_w = ctx.screen_rect().width();
+    let compact_mobile = screen_w < 640.0;
+    let show_win_controls = !cfg!(target_os = "android") && !compact_mobile;
+    let bar_h = 52.0 + top_safe_inset;
     let panel = egui::TopBottomPanel::top("window_title")
-        .exact_height(52.0)
-        .frame(egui::Frame::none().fill(p.sidebar))
+        .exact_height(bar_h)
+        .frame(egui::Frame::none().fill(p.sidebar).inner_margin(Margin {
+            left: 0.0,
+            right: if compact_mobile { SPACE_2 } else { 0.0 },
+            top: top_safe_inset,
+            bottom: 0.0,
+        }))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACE_2;
+                ui.spacing_mut().item_spacing.x = if compact_mobile { SPACE_1 } else { SPACE_2 };
                 let density_normal_lbl = DensityMode::Normal.label_localized(locale);
                 let density_minimal_lbl = DensityMode::Minimal.label_localized(locale);
                 let theme_dark_lbl = ThemeMode::Dark.label_localized(locale);
@@ -55,6 +66,72 @@ pub fn title(
                         (10.0 + text_w + 10.0).ceil().max(38.0)
                     }
                 };
+                if compact_mobile {
+                    // 移动窄屏（<640px）：左侧品牌 + 右侧紧凑单键切换（密度 / 主题 / 语言），保证 380px 不溢出不裁切
+                    let d_lbl = density.label_localized(locale);
+                    let d_w = seg_w(&d_lbl, true).min(86.0);
+                    let controls_w = d_w + 34.0 + 40.0 + SPACE_1 * 4.0 + 4.0;
+                    let drag_w = (ui.available_width() - controls_w).max(96.0);
+                    let (rect, _) = ui.allocate_exact_size(vec2(drag_w, 52.0), Sense::hover());
+                    let painter = ui.painter().with_clip_rect(rect);
+                    paint_icon(
+                        &painter,
+                        Rect::from_center_size(
+                            pos2(rect.left() + 18.0, rect.center().y),
+                            vec2(20.0, 20.0),
+                        ),
+                        IconKind::Brand,
+                        p.accent,
+                    );
+                    painter.text(
+                        pos2(rect.left() + 36.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        "Parallaxe",
+                        FontId::proportional(FONT_TITLE),
+                        p.text_primary,
+                    );
+
+                    // 触控友好（36px 高紧凑胶囊）快速切换：密度、主题、语言
+                    if top_segment(
+                        ui,
+                        p,
+                        Some(if density == DensityMode::Minimal {
+                            IconKind::Layers
+                        } else {
+                            IconKind::Services
+                        }),
+                        &d_lbl,
+                        true,
+                        d_w,
+                    )
+                    .clicked()
+                    {
+                        actions.push(UiAction::ToggleDensity);
+                    }
+                    let t_ic = match theme {
+                        ThemeMode::Dark => IconKind::Moon,
+                        ThemeMode::Light => IconKind::Sun,
+                    };
+                    if top_segment(ui, p, Some(t_ic), "", true, 34.0)
+                        .on_hover_text(theme.label_localized(locale))
+                        .clicked()
+                    {
+                        actions.push(UiAction::ToggleTheme);
+                    }
+                    let next_loc = match locale {
+                        Locale::ZhCn => Locale::EnUs,
+                        Locale::EnUs => Locale::ZhCn,
+                    };
+                    let cur_loc_lbl = match locale {
+                        Locale::ZhCn => &locale_zh_lbl,
+                        Locale::EnUs => &locale_en_lbl,
+                    };
+                    if top_segment(ui, p, None, cur_loc_lbl, true, 40.0).clicked() {
+                        actions.push(UiAction::SetLocale(next_loc));
+                    }
+                    return;
+                }
+
                 let w_dn = seg_w(&density_normal_lbl, true);
                 let w_dm = seg_w(&density_minimal_lbl, true);
                 let w_td = seg_w(&theme_dark_lbl, true);
@@ -63,14 +140,18 @@ pub fn title(
                 let w_le = seg_w(&locale_en_lbl, false);
 
                 // 右侧三组常驻分段胶囊（完整/极简、深色/浅色、中文/EN）+ 三个窗口控制按钮
-                let right_controls_w =
-                    (w_dn + w_dm + 12.0) + (w_td + w_tl + 12.0) + (w_lz + w_le + 12.0) + 154.0;
-                let drag_w = (ui.available_width() - right_controls_w).max(120.0);
+                let win_ctrl_w = if show_win_controls { 132.0 } else { 12.0 };
+                let right_controls_w = (w_dn + w_dm + 20.0)
+                    + (w_td + w_tl + 20.0)
+                    + (w_lz + w_le + 20.0)
+                    + win_ctrl_w
+                    + SPACE_2 * 4.0;
+                let drag_w = (ui.available_width() - right_controls_w).max(96.0);
                 let (rect, hit) =
                     ui.allocate_exact_size(vec2(drag_w, 52.0), Sense::click_and_drag());
-                let painter = ui.painter();
+                let painter = ui.painter().with_clip_rect(rect);
                 paint_icon(
-                    painter,
+                    &painter,
                     Rect::from_center_size(
                         pos2(rect.left() + 24.0, rect.center().y),
                         vec2(22.0, 22.0),
@@ -106,10 +187,10 @@ pub fn title(
                     .fill(p.canvas)
                     .stroke(Stroke::new(1.0_f32, p.border_subtle))
                     .rounding(Rounding::same(RADIUS_MD))
-                    .inner_margin(Margin::same(3.0))
+                    .inner_margin(Margin::same(SPACE_1))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().item_spacing.x = SPACE_1;
                             if top_segment(
                                 ui,
                                 p,
@@ -144,10 +225,10 @@ pub fn title(
                     .fill(p.canvas)
                     .stroke(Stroke::new(1.0_f32, p.border_subtle))
                     .rounding(Rounding::same(RADIUS_MD))
-                    .inner_margin(Margin::same(3.0))
+                    .inner_margin(Margin::same(SPACE_1))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().item_spacing.x = SPACE_1;
                             if top_segment(
                                 ui,
                                 p,
@@ -182,10 +263,10 @@ pub fn title(
                     .fill(p.canvas)
                     .stroke(Stroke::new(1.0_f32, p.border_subtle))
                     .rounding(Rounding::same(RADIUS_MD))
-                    .inner_margin(Margin::same(3.0))
+                    .inner_margin(Margin::same(SPACE_1))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().item_spacing.x = SPACE_1;
                             if top_segment(
                                 ui,
                                 p,
@@ -217,26 +298,28 @@ pub fn title(
 
                 ui.add_space(SPACE_1);
 
-                for (label, tip_key) in [
-                    ("−", "gui.top.win.minimize"),
-                    ("□", "gui.top.win.maximize"),
-                    ("×", "gui.top.win.close"),
-                ] {
-                    if ui
-                        .add_sized(
-                            [32.0, 32.0],
-                            egui::Button::new(
-                                RichText::new(label).size(16.0).color(p.text_secondary),
+                if show_win_controls {
+                    for (label, tip_key) in [
+                        ("−", "gui.top.win.minimize"),
+                        ("□", "gui.top.win.maximize"),
+                        ("×", "gui.top.win.close"),
+                    ] {
+                        if ui
+                            .add_sized(
+                                [32.0, 32.0],
+                                egui::Button::new(
+                                    RichText::new(label).size(16.0).color(p.text_secondary),
+                                )
+                                .frame(false),
                             )
-                            .frame(false),
-                        )
-                        .on_hover_text(translate(locale, tip_key, &[]))
-                        .clicked()
-                    {
-                        match label {
-                            "−" => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
-                            "□" => toggle_max(ctx),
-                            _ => ctx.send_viewport_cmd(ViewportCommand::Close),
+                            .on_hover_text(translate(locale, tip_key, &[]))
+                            .clicked()
+                        {
+                            match label {
+                                "−" => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+                                "□" => toggle_max(ctx),
+                                _ => ctx.send_viewport_cmd(ViewportCommand::Close),
+                            }
                         }
                     }
                 }
@@ -292,19 +375,28 @@ fn top_segment(
     ui.painter()
         .rect(r, Rounding::same(RADIUS_SM), fill, stroke);
     if let Some(ic) = kind {
-        paint_icon(
-            ui.painter(),
-            Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(12.5, 12.5)),
-            ic,
-            fg,
-        );
-        ui.painter().text(
-            pos2(r.left() + 24.0, r.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(FONT_META),
-            fg,
-        );
+        if label.is_empty() {
+            paint_icon(
+                ui.painter(),
+                Rect::from_center_size(r.center(), vec2(14.0, 14.0)),
+                ic,
+                fg,
+            );
+        } else {
+            paint_icon(
+                ui.painter(),
+                Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(12.5, 12.5)),
+                ic,
+                fg,
+            );
+            ui.painter().text(
+                pos2(r.left() + 24.0, r.center().y),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(FONT_META),
+                fg,
+            );
+        }
     } else {
         ui.painter().text(
             r.center(),
@@ -376,14 +468,45 @@ pub fn sidebar_nav(
         kind,
         fg,
     );
-    ui.painter().text(
+    let text_clip = Rect::from_min_max(
+        pos2(r.left() + 34.0, r.top()),
+        pos2(r.right() - 6.0, r.bottom()),
+    );
+    let avail_text_w = (text_clip.width()).max(16.0);
+    let galley =
+        ui.fonts(|f| f.layout_no_wrap(label.to_owned(), FontId::proportional(FONT_BODY), fg));
+    let truncated = galley.size().x > avail_text_w;
+    let display_text = if truncated {
+        let mut s = String::new();
+        for ch in label.chars() {
+            let mut next = s.clone();
+            next.push(ch);
+            let w = ui.fonts(|f| {
+                f.layout_no_wrap(format!("{next}..."), FontId::proportional(FONT_BODY), fg)
+                    .size()
+                    .x
+            });
+            if w > avail_text_w {
+                break;
+            }
+            s = next;
+        }
+        format!("{s}...")
+    } else {
+        label.to_owned()
+    };
+    ui.painter().with_clip_rect(text_clip).text(
         pos2(r.left() + 36.0, r.center().y),
         Align2::LEFT_CENTER,
-        label,
+        display_text,
         FontId::proportional(FONT_BODY),
         fg,
     );
-    response
+    if truncated {
+        response.on_hover_text(label)
+    } else {
+        response
+    }
 }
 
 /// 顶部分段 Tab 轨道内的自适应 Tab 项（按文字实测宽度排布，选中浮起，未选中无边框）。
@@ -555,7 +678,7 @@ pub fn resize_edges(ctx: &Context) {
 /// 侧栏小节分组标题（参考 shadcn-admin / gpui-kit SidebarGroup：浅色静音标签）。
 pub fn sidebar_group_label(ui: &mut Ui, p: Palette, title: &str) {
     ui.horizontal(|ui| {
-        ui.add_space(SPACE_3 - 2.0);
+        ui.add_space(SPACE_2);
         ui.label(
             RichText::new(title)
                 .size(FONT_META)

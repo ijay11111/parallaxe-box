@@ -8,7 +8,7 @@
 4. 覆盖阶段 2/3/4/5 的既定基准：
    - `check --profile google-all` = 选中 107 / 覆盖 0 / 发包 0 / 退出码 3
    - `selftest --offline` = 28 passed / 0 failed
-   - 三端 parity = 10/10（parity_replay）+ 三进程比对 1/1
+   - 原生 GUI 回放 10/10（parity_replay）+ CLI / agent / GUI 比对 1/1
    - 自定义导入未获 F3 授权前零发包（import_bundle / user_import 两个精确用例）
    - `--no-default-features` 纯无头构建可编译
 
@@ -177,6 +177,67 @@ def check_google_all(bin_path: Path, out_dir: Path) -> Check:
     return c
 
 
+def check_build_info(bin_path: Path, out_dir: Path, expected: bool | None) -> tuple[Check, bool]:
+    c = Check(
+        "编译期构建标记",
+        "distribution_release_build=" + ("true" if expected is True else "false" if expected is False else "可识别"),
+    )
+    proc = run([str(bin_path), "build-info", "--json"], out_dir, "build-info")
+    c.exit_code = proc.returncode
+    c.duration_ms = proc.elapsed_ms  # type: ignore[attr-defined]
+    c.log = proc.log_path.name  # type: ignore[attr-defined]
+    try:
+        doc = parse_json_report(proc.stdout)
+        release = doc["distribution_release_build"]
+        marker = doc["marker"]
+        c.actual = f"distribution_release_build={release} / marker={marker} / exit={proc.returncode}"
+        problems = []
+        if not isinstance(release, bool):
+            problems.append("distribution_release_build 不是布尔值")
+        if expected is not None and release is not expected:
+            problems.append(f"distribution_release_build={release} != {expected}")
+        expected_marker = "parallaxe.distribution-release/v1" if release else "parallaxe.source-build/v1"
+        if marker != expected_marker:
+            problems.append(f"marker={marker} != {expected_marker}")
+        if proc.returncode != 0:
+            problems.append(f"exit={proc.returncode}")
+        c.ok = not problems
+        c.detail = "；".join(problems)
+        return c, release is True
+    except Exception as exc:  # noqa: BLE001
+        c.actual = "构建信息解析失败"
+        c.detail = str(exc)
+        return c, False
+
+
+def check_google_all_plan(bin_path: Path, out_dir: Path) -> Check:
+    c = Check("发行包 Google 全量零发包计划", "target_count=107 / zero_packet=true / exit=0")
+    proc = run(
+        [str(bin_path), "check", "--headless", "--plan", "--profile", "google-all", "--json"],
+        out_dir,
+        "google-all-plan",
+    )
+    c.exit_code = proc.returncode
+    c.duration_ms = proc.elapsed_ms  # type: ignore[attr-defined]
+    c.log = proc.log_path.name  # type: ignore[attr-defined]
+    try:
+        doc = parse_json_report(proc.stdout)
+        c.actual = f"target_count={doc['target_count']} / zero_packet={doc['zero_packet']} / exit={proc.returncode}"
+        problems = []
+        if doc["target_count"] != GOOGLE_ALL_SELECTED:
+            problems.append(f"target_count={doc['target_count']} != {GOOGLE_ALL_SELECTED}")
+        if doc["zero_packet"] is not True:
+            problems.append("zero_packet != true")
+        if proc.returncode != 0:
+            problems.append(f"exit={proc.returncode}")
+        c.ok = not problems
+        c.detail = "；".join(problems)
+    except Exception as exc:  # noqa: BLE001
+        c.actual = "计划解析失败"
+        c.detail = str(exc)
+    return c
+
+
 def check_selftest(bin_path: Path, out_dir: Path) -> Check:
     c = Check("离线自检", "passed=28 / failed=0 / network=0 / exit=0")
     proc = run([str(bin_path), "selftest", "--offline", "--json"], out_dir, "selftest")
@@ -287,6 +348,11 @@ def main() -> int:
     ap.add_argument("--bin", default=None, help="已有 parallaxe 可执行文件路径")
     ap.add_argument("--no-build", action="store_true", help="不重新构建，直接使用 --bin 或 target/debug")
     ap.add_argument("--no-cargo-tests", action="store_true", help="跳过 cargo 测试类断言（平台构建任务用）")
+    ap.add_argument(
+        "--require-distribution-release",
+        action="store_true",
+        help="要求二进制带 distribution-release 编译期标记；默认构建也会显式启用该 feature",
+    )
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="输出目录（默认 tests/release-smoke/latest）")
     args = ap.parse_args()
 
@@ -303,20 +369,24 @@ def main() -> int:
     bin_path = Path(args.bin).resolve() if args.bin else ROOT / "target" / "debug" / _exe("parallaxe")
 
     if not args.no_build:
-        c = Check("纯无头构建", "cargo build --no-default-features 退出码 0")
-        proc = run(
-            [
-                "cargo",
-                "build",
-                "-p",
-                "parallaxe-cli",
-                "--no-default-features",
-                "--offline",
-                "--locked",
-            ],
-            out_dir,
-            "build-headless",
+        c = Check(
+            "纯无头构建",
+            "cargo build --no-default-features"
+            + (" --features distribution-release" if args.require_distribution_release else "")
+            + " 退出码 0",
         )
+        build_cmd = [
+            "cargo",
+            "build",
+            "-p",
+            "parallaxe-cli",
+            "--no-default-features",
+            "--offline",
+            "--locked",
+        ]
+        if args.require_distribution_release:
+            build_cmd += ["--features", "distribution-release"]
+        proc = run(build_cmd, out_dir, "build-headless")
         c.exit_code = proc.returncode
         c.duration_ms = proc.elapsed_ms  # type: ignore[attr-defined]
         c.log = proc.log_path.name  # type: ignore[attr-defined]
@@ -348,8 +418,20 @@ def main() -> int:
     )
     checks.append(c)
 
-    # 2) 阶段 2 基线
-    checks.append(check_google_all(bin_path, out_dir))
+    # 2) 编译期边界 + 阶段 2 基线
+    build_info_check, distribution_release = check_build_info(
+        bin_path,
+        out_dir,
+        True if args.require_distribution_release else None,
+    )
+    checks.append(build_info_check)
+    if build_info_check.ok:
+        if distribution_release:
+            checks.append(check_google_all_plan(bin_path, out_dir))
+        else:
+            checks.append(check_google_all(bin_path, out_dir))
+    else:
+        print("[fail-closed] 构建标记不可识别，跳过 google-all 运行，避免误触真实网络")
     checks.append(check_selftest(bin_path, out_dir))
     checks.append(check_fixture(bin_path, out_dir))
 
@@ -367,7 +449,7 @@ def main() -> int:
         )
         checks.append(
             _cargo_test(
-                "三端跨进程 parity",
+                "CLI / agent / GUI 跨进程 parity",
                 "gui_cli_agent_parity 1/1 通过",
                 ["-p", "parallaxe-cli", "--test", "gui_cli_agent_parity"],
                 out_dir,

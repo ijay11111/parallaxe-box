@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use parallaxe_core::ai_bridge::{
+    AiScope, BridgeControl, BridgePaths, BridgeRequest, BridgeResult, BridgeStatus, DecisionKind,
+    ResultStatus, MAX_BATCH_SIZE, MAX_TARGETS, MIN_INTERVAL_MS,
+};
 use parallaxe_core::contracts::{Event, Mode, Report};
 use parallaxe_core::guard;
 use parallaxe_core::i18n::{translate, Locale};
@@ -16,7 +20,7 @@ use parallaxe_core::runtime::{self, CheckOptions};
 use parallaxe_core::selftest;
 use parallaxe_core::targets::{ConfigError, Registry};
 
-const OPERATIONS: [&str; 9] = [
+const OPERATIONS: [&str; 13] = [
     "list_targets",
     "load_profile",
     "check",
@@ -26,7 +30,14 @@ const OPERATIONS: [&str; 9] = [
     "export_report",
     "cancel",
     "isolate",
+    "ai_status",
+    "ai_request_check",
+    "ai_request_status",
+    "ai_autonomous",
 ];
+
+/// 协议版本：v1 的 9 个只读操作不变；v2 追加任务 A 的 4 个 AI 授权/取回操作。
+const PROTOCOL_VERSION: u8 = 2;
 
 struct RunRecord {
     report: Report,
@@ -35,11 +46,28 @@ struct RunRecord {
     events: Vec<Event>,
 }
 
-#[derive(Default)]
 struct Session {
     runs: HashMap<String, RunRecord>,
     /// 活动运行（本阶段运行同步完成，保留字段以表达 max_active_runs=1 的语义）。
     active: Option<String>,
+    /// AI 授权桥（文件级、无监听端口；路径由 `PARALLAXE_AI_BRIDGE_DIR` 或系统临时目录决定）。
+    bridge: BridgePaths,
+    /// 本会话内由 agent 提交、尚未取回结果的请求。
+    ai_pending: HashMap<String, BridgeRequest>,
+    /// agent 自主关闭过自主检测后，即使 GUI 状态文件暂时滞后也不再按自主模式提交。
+    ai_revoked: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            runs: HashMap::new(),
+            active: None,
+            bridge: BridgePaths::resolve(),
+            ai_pending: HashMap::new(),
+            ai_revoked: false,
+        }
+    }
 }
 
 impl Session {
@@ -79,6 +107,8 @@ fn agent_error_key(code: &str) -> &'static str {
         "BUSY" => "agent.error.busy",
         "INTERNAL" => "agent.error.internal",
         "POLICY_DENIED" => "agent.error.policy_denied",
+        "BRIDGE_UNAVAILABLE" => "agent.error.bridge_unavailable",
+        "AUTONOMOUS_DISABLED" => "agent.error.autonomous_disabled",
         _ => "agent.error.generic",
     }
 }
@@ -101,7 +131,7 @@ fn localized_agent_message(code: &str, message: &str) -> String {
         "未知运行 ID" => "Unknown run ID",
         "目标不在该运行内" => "Target is not part of this run",
         "缺少 format" => "Missing format",
-        "format 只支持 json/html/csv" => "format only supports json/html/csv",
+        "format 只支持 json/html/csv/md" => "format only supports json/html/csv/md",
         "缺少 source_run_id" => "Missing source_run_id",
         "未知目标 ID" => "Unknown target ID",
         "action 只支持 plan/explain" => "action only supports plan/explain",
@@ -112,6 +142,14 @@ fn localized_agent_message(code: &str, message: &str) -> String {
         "agent 单条请求不能追加 state_dir/proxy/interface" => {
             "A single agent request cannot add state_dir/proxy/interface"
         }
+        "未检测到 GUI 授权桥" => "No GUI authorization bridge detected",
+        "自主检测只能由用户在 GUI 设置中打开" => {
+            "Autonomous detection can only be enabled by the user in the GUI settings"
+        }
+        "授权决定与请求范围不匹配" => {
+            "The authorization decision does not match the request scope"
+        }
+        "请求忙" => "The request is busy",
         "请求被拒绝" => "Request denied",
         _ => "",
     };
@@ -190,7 +228,7 @@ fn handle_list_targets(registry: &Registry, args: &Value) -> Value {
         })
         .collect();
     json!({
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "operations": OPERATIONS,
         "max_active_runs": 1,
         "targets": items,
@@ -225,6 +263,8 @@ fn handle_load_profile(registry: &Registry, args: &Value) -> Value {
 fn check_options(args: &Value) -> Result<CheckOptions, &'static str> {
     if args.get("state_dir").is_some()
         || args.get("proxy").is_some()
+        || args.get("proxy_mode").is_some()
+        || args.get("pac_url").is_some()
         || args.get("interface").is_some()
     {
         return Err("POLICY_DENIED");
@@ -239,8 +279,16 @@ fn check_options(args: &Value) -> Result<CheckOptions, &'static str> {
                         .is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string))
             }
             "profile" | "fixture" | "expect" => value.is_string(),
-            "full" | "ipv4" | "fast" => value.is_boolean(),
-            "timeout_ms" | "max_concurrency" => value.is_u64(),
+            "full" | "ipv4" | "fast" | "plan" | "confirm_budget" | "node_sweep" => {
+                value.is_boolean()
+            }
+            "timeout_ms"
+            | "max_concurrency"
+            | "min_interval_ms"
+            | "inter_target_interval_ms"
+            | "batch_size"
+            | "batch_cooldown_ms"
+            | "node_retest" => value.is_u64(),
             _ => false,
         };
         if !valid {
@@ -271,6 +319,10 @@ fn check_options(args: &Value) -> Result<CheckOptions, &'static str> {
         fixture,
         state_dir: None,
         proxy: None,
+        proxy_mode: parallaxe_core::ProxyMode::Auto,
+        pac_url: None,
+        proxy_path: None,
+        proxy_note: None,
         interface: None,
         ipv4: args
             .get("ipv4")
@@ -288,6 +340,9 @@ fn check_options(args: &Value) -> Result<CheckOptions, &'static str> {
             .transpose()
             .map_err(|_| "INVALID_ARGUMENT")?,
         min_interval_ms: args.get("min_interval_ms").and_then(|value| value.as_u64()),
+        inter_target_interval_ms: args
+            .get("inter_target_interval_ms")
+            .and_then(|value| value.as_u64()),
         batch_size: args
             .get("batch_size")
             .and_then(|value| value.as_u64())
@@ -315,6 +370,7 @@ fn check_options(args: &Value) -> Result<CheckOptions, &'static str> {
             .get("node_sweep")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        qos_control: None,
         run_id: None,
     })
 }
@@ -363,8 +419,9 @@ fn handle_export(session: &Session, args: &Value) -> Value {
         "json" => reports::to_json(&record.report),
         "html" => reports::to_html(&record.report),
         "csv" => reports::to_csv(&record.report),
+        "md" => reports::to_markdown(&record.report, parallaxe_core::Locale::ZhCn),
         _ => {
-            return json!({"error": {"code": "INVALID_ARGUMENT", "message_safe": "format 只支持 json/html/csv"}})
+            return json!({"error": {"code": "INVALID_ARGUMENT", "message_safe": "format 只支持 json/html/csv/md"}})
         }
     };
     json!({"format": format, "content": content})
@@ -456,6 +513,302 @@ fn handle_isolate(args: &Value) -> Value {
         "protect": string_array(args, "protect"),
         "defer": string_array(args, "defer"),
         "selected_by": "USER",
+    })
+}
+
+fn ai_error(code: &str, message: &str) -> Value {
+    json!({"error": {"code": code, "message_safe": message}})
+}
+
+fn ai_args_are_strict(args: &Value, allowed: &[&str]) -> bool {
+    match args.as_object() {
+        Some(object) => object.keys().all(|key| allowed.contains(&key.as_str())),
+        None => false,
+    }
+}
+
+fn parse_rfc3339(text: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// 状态文件超过 120 秒未刷新即视为宿主已退出（防止残留“自主已开”的误判）。
+fn ai_status_is_live(status: &BridgeStatus) -> bool {
+    parse_rfc3339(&status.updated_at).is_some_and(|updated| {
+        time::OffsetDateTime::now_utc() - updated < time::Duration::seconds(120)
+    })
+}
+
+fn ai_qos_doc() -> Value {
+    json!({
+        "min_interval_ms": MIN_INTERVAL_MS,
+        "batch_size_max": MAX_BATCH_SIZE,
+        "max_targets": MAX_TARGETS,
+        "preferred_transport": "TCP_FIRST",
+        "stop_on": ["403", "429"],
+    })
+}
+
+/// 任务 A：读取 AI 自主调试开关与宿主能力（只读，不发包）。
+fn handle_ai_status(session: &Session, args: &Value) -> Value {
+    if !ai_args_are_strict(args, &[]) {
+        return ai_error("INVALID_ARGUMENT", "ai_status 不接受任何参数");
+    }
+    let status = session.bridge.read_status().filter(ai_status_is_live);
+    let Some(status) = status else {
+        return json!({
+            "available": false,
+            "host": Value::Null,
+            "autonomous_enabled": false,
+            "autonomous_revoked_by_agent": session.ai_revoked,
+            "session_only": true,
+            "imported_targets": [],
+            "capabilities": [],
+            "pending_requests": session.ai_pending.len(),
+            "qos": ai_qos_doc(),
+            "protocol_version": PROTOCOL_VERSION,
+            "notice": "未检测到 GUI 授权桥；默认零发包。请先打开 Parallaxe box（桌面 GUI）再重试。",
+        });
+    };
+    json!({
+        "available": true,
+        "host": status.host,
+        "autonomous_enabled": status.autonomous_enabled,
+        "autonomous_revoked_by_agent": session.ai_revoked,
+        "session_only": status.session_only,
+        "imported_targets": status.imported_targets,
+        "capabilities": status.capabilities,
+        "pending_requests": session.ai_pending.len(),
+        "qos": ai_qos_doc(),
+        "protocol_version": PROTOCOL_VERSION,
+    })
+}
+
+/// 任务 A/B：提交一次性检测请求。agent 自己不发包，由 GUI 在用户确认（A）
+/// 或用户已打开自主检测（B）后执行，并把脱敏报告回传。
+fn handle_ai_request_check(session: &mut Session, args: &Value) -> Value {
+    if !ai_args_are_strict(args, &["profile", "targets", "purpose"]) {
+        return ai_error(
+            "INVALID_ARGUMENT",
+            "ai_request_check 只接受 profile/targets/purpose",
+        );
+    }
+    let Some(status) = session.bridge.read_status().filter(ai_status_is_live) else {
+        return ai_error("BRIDGE_UNAVAILABLE", "未检测到 GUI 授权桥");
+    };
+    let profile = string_arg(args, "profile");
+    let mut targets = string_array(args, "targets");
+    if let Some(single) = args.get("targets").and_then(Value::as_str) {
+        targets = vec![single.to_string()];
+    }
+    let purpose =
+        string_arg(args, "purpose").unwrap_or_else(|| "外部 AI 请求的一次性首跳观测".to_string());
+    let scope = match profile {
+        Some(profile) => AiScope::for_profile(profile, purpose),
+        None => AiScope::for_targets(targets, purpose),
+    };
+    let request = match BridgeRequest::new(scope, MIN_INTERVAL_MS, 5) {
+        Ok(request) => request,
+        Err(message) => return ai_error("INVALID_ARGUMENT", &message),
+    };
+    if let Err(error) = session.bridge.write_request(&request) {
+        return ai_error("INTERNAL", &error.to_string());
+    }
+    let autonomous_mode = status.autonomous_enabled && !session.ai_revoked;
+    session
+        .ai_pending
+        .insert(request.request_id.clone(), request.clone());
+    json!({
+        "request_id": request.request_id,
+        "status": "PENDING",
+        "mode": if autonomous_mode { "AUTONOMOUS" } else { "USER_CONFIRMATION" },
+        "scope": request.scope.label(),
+        "expires_at": request.expires_at,
+        "min_interval_ms": request.min_interval_ms,
+        "batch_size": request.batch_size,
+        "protocol_version": PROTOCOL_VERSION,
+        "notice": if autonomous_mode {
+            "自主检测已开启：GUI 将在 QoS 红线内自动执行并回传脱敏报告；随后用 ai_request_status 取回。"
+        } else {
+            "请在 GUI 的「AI 检测一次性授权」弹窗点击确认；未确认前保持零发包。"
+        },
+    })
+}
+
+/// 任务 A/B：等待并取回授权结果；COMPLETED 时把报告装载进本会话，
+/// 之后 `explain` / `export_report` 与普通运行完全同构。
+async fn handle_ai_request_status(session: &mut Session, args: &Value) -> Value {
+    if !ai_args_are_strict(args, &["request_id", "wait_ms"]) {
+        return ai_error(
+            "INVALID_ARGUMENT",
+            "ai_request_status 只接受 request_id/wait_ms",
+        );
+    }
+    let Some(request_id) = string_arg(args, "request_id") else {
+        return ai_error("INVALID_ARGUMENT", "缺少 request_id");
+    };
+    let wait_ms = args
+        .get("wait_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(30_000);
+    let Some(request) = session.ai_pending.get(&request_id).cloned() else {
+        return ai_error(
+            "INVALID_ARGUMENT",
+            "request_id 不在本会话内（请先调用 ai_request_check）",
+        );
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        if let Some(result) = session.bridge.read_result(&request_id) {
+            return ai_result_data(session, &request, result);
+        }
+        if let Some(decision) = session.bridge.read_decision(&request_id) {
+            if decision.nonce != request.nonce || decision.scope_digest != request.scope_digest() {
+                return ai_error("POLICY_DENIED", "授权决定与请求范围不匹配");
+            }
+            match decision.decision {
+                DecisionKind::Denied => {
+                    return json!({
+                        "request_id": request_id,
+                        "status": "DENIED",
+                        "autonomous": false,
+                        "network_request_count": 0,
+                        "protocol_version": PROTOCOL_VERSION,
+                    })
+                }
+                DecisionKind::Approved => {
+                    let expired = parse_rfc3339(&decision.expires_at)
+                        .is_some_and(|end| time::OffsetDateTime::now_utc() >= end);
+                    if expired {
+                        return json!({
+                            "request_id": request_id,
+                            "status": "EXPIRED",
+                            "autonomous": decision.autonomous,
+                            "notice": "授权已过期，未执行任何发包；请重新提交请求。",
+                            "protocol_version": PROTOCOL_VERSION,
+                        });
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return json!({
+                            "request_id": request_id,
+                            "status": "APPROVED",
+                            "autonomous": decision.autonomous,
+                            "network_request_count": 0,
+                            "notice": "用户已授权，GUI 正在执行；稍后再次查询即可取回报告。",
+                            "protocol_version": PROTOCOL_VERSION,
+                        });
+                    }
+                }
+            }
+        } else if parse_rfc3339(&request.expires_at)
+            .is_some_and(|end| time::OffsetDateTime::now_utc() >= end)
+        {
+            return json!({
+                "request_id": request_id,
+                "status": "EXPIRED",
+                "autonomous": false,
+                "network_request_count": 0,
+                "notice": "用户在有效期内未确认，已按零发包过期。",
+                "protocol_version": PROTOCOL_VERSION,
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            return json!({
+                "request_id": request_id,
+                "status": "PENDING",
+                "autonomous": false,
+                "network_request_count": 0,
+                "notice": "仍在等待用户确认；未确认前保持零发包。",
+                "protocol_version": PROTOCOL_VERSION,
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+fn ai_result_data(session: &mut Session, request: &BridgeRequest, result: BridgeResult) -> Value {
+    match result.status {
+        ResultStatus::Completed => {
+            let Some(report) = result.report else {
+                return ai_error("INTERNAL", "结果缺少报告");
+            };
+            let run_id = report.run_id.clone();
+            session.store(run_id.clone(), report, Vec::new());
+            json!({
+                "request_id": request.request_id,
+                "status": "COMPLETED",
+                "run_id": run_id,
+                "origin": result.origin,
+                "autonomous": result.autonomous,
+                "network_request_count": result.network_request_count,
+                "explain_ready": true,
+                "export_ready": true,
+                "protocol_version": PROTOCOL_VERSION,
+            })
+        }
+        ResultStatus::Denied => json!({
+            "request_id": request.request_id,
+            "status": "DENIED",
+            "autonomous": false,
+            "network_request_count": 0,
+            "reason": result.denied_reason,
+            "protocol_version": PROTOCOL_VERSION,
+        }),
+        ResultStatus::Failed => json!({
+            "request_id": request.request_id,
+            "status": "FAILED",
+            "autonomous": result.autonomous,
+            "network_request_count": 0,
+            "error": result.error,
+            "protocol_version": PROTOCOL_VERSION,
+        }),
+    }
+}
+
+/// 任务 B：agent 只能**关闭**自主检测（打开必须由用户在 GUI 设置里完成）。
+fn handle_ai_autonomous(session: &mut Session, args: &Value) -> Value {
+    if !ai_args_are_strict(args, &["enabled", "reason"]) {
+        return ai_error("INVALID_ARGUMENT", "ai_autonomous 只接受 enabled/reason");
+    }
+    let Some(enabled) = args.get("enabled").and_then(Value::as_bool) else {
+        return ai_error("INVALID_ARGUMENT", "缺少布尔 enabled");
+    };
+    if enabled {
+        return ai_error("POLICY_DENIED", "自主检测只能由用户在 GUI 设置中打开");
+    }
+    let reason = string_arg(args, "reason");
+    let control = BridgeControl::disable_autonomous(reason.clone());
+    if let Err(error) = session.bridge.write_control(&control) {
+        return ai_error("INTERNAL", &error.to_string());
+    }
+    // 即时收回：最多等待 2 秒确认 GUI 已消费控制指令并把状态翻回关闭。
+    let mut confirmed = false;
+    for _ in 0..20 {
+        let off = session
+            .bridge
+            .read_status()
+            .filter(ai_status_is_live)
+            .is_some_and(|status| !status.autonomous_enabled);
+        if off {
+            confirmed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    session.ai_revoked = true;
+    json!({
+        "status": "REVOKED",
+        "autonomous": false,
+        "confirmed_by_host": confirmed,
+        "revoked_by": "AGENT",
+        "session_only": true,
+        "reason": reason,
+        "protocol_version": PROTOCOL_VERSION,
+        "notice": if confirmed {
+            "GUI 已确认关闭自主检测；后续请求必须重新由用户确认。"
+        } else {
+            "关闭指令已提交；GUI 下次轮询即收回权限，后续请求不会再按自主模式提交。"
+        },
     })
 }
 
@@ -778,6 +1131,22 @@ async fn serve<R: tokio::io::AsyncBufRead + Unpin, W: AsyncWriteExt + Unpin>(
             }
             "isolate" => {
                 let data = handle_isolate(&args);
+                emit_data(&mut stdout, &id, data).await?;
+            }
+            "ai_status" => {
+                let data = handle_ai_status(&session, &args);
+                emit_data(&mut stdout, &id, data).await?;
+            }
+            "ai_request_check" => {
+                let data = handle_ai_request_check(&mut session, &args);
+                emit_data(&mut stdout, &id, data).await?;
+            }
+            "ai_request_status" => {
+                let data = handle_ai_request_status(&mut session, &args).await;
+                emit_data(&mut stdout, &id, data).await?;
+            }
+            "ai_autonomous" => {
+                let data = handle_ai_autonomous(&mut session, &args);
                 emit_data(&mut stdout, &id, data).await?;
             }
             _ => {

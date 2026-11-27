@@ -53,6 +53,12 @@ fn effective_batch_size(budget: &Budget) -> u32 {
     budget.batch_size.clamp(1, HARD_LIMITS.max_batch_size)
 }
 
+fn effective_inter_target_interval(budget: &Budget) -> u64 {
+    budget
+        .inter_target_interval_ms
+        .min(HARD_LIMITS.max_inter_target_interval_ms)
+}
+
 fn effective_cooldown(budget: &Budget) -> u64 {
     budget
         .batch_cooldown_ms
@@ -63,17 +69,37 @@ fn effective_cooldown(budget: &Budget) -> u64 {
 ///
 /// * 同一 host / 节点 / 协议 / 会话：第 n 个偏移 `n * min_interval_ms`；
 /// * UDP/QUIC 每满 `batch_size` 再追加一次 `batch_cooldown_ms`；
-/// * 不同 host 之间互不延迟（避免全量扫描被无谓拖死）。
+/// * 不同 host 之间：每个新目标首次请求按 `inter_target_interval_ms` 逐目标错开
+///   （0 时保持原有"互不延迟"行为，可由用户调节至上限 10s）。
 pub fn plan_slots(requests: &[FetchRequest], budget: &Budget) -> Vec<SendSlot> {
     let interval = effective_interval(budget);
+    let inter_target = effective_inter_target_interval(budget);
     let batch_size = effective_batch_size(budget);
     let cooldown = effective_cooldown(budget);
     let mut seen: BTreeMap<ScheduleKey, u32> = BTreeMap::new();
+    // 跨目标间隔：每个新 host 的首次请求按出现顺序错开 inter_target。
+    // 同一 host 的后续请求不重复叠加，避免双重延迟（其间隔由 min_interval 负责）。
+    let mut host_order: BTreeMap<String, u32> = BTreeMap::new();
+    let mut next_host_rank: u32 = 0;
     let mut slots = Vec::with_capacity(requests.len());
     for (index, request) in requests.iter().enumerate() {
         let key = ScheduleKey::current_path(&request.host, request.protocol);
+        let is_new_host = !host_order.contains_key(&request.host);
+        let host_rank = if is_new_host {
+            let rank = next_host_rank;
+            host_order.insert(request.host.clone(), rank);
+            next_host_rank += 1;
+            rank
+        } else {
+            *host_order.get(&request.host).unwrap_or(&0)
+        };
         let ordinal = seen.entry(key.clone()).or_insert(0);
-        let base = u64::from(*ordinal) * interval;
+        let base = u64::from(*ordinal) * interval
+            + if is_new_host {
+                u64::from(host_rank) * inter_target
+            } else {
+                0
+            };
         let cooldown_batches = if key.protocol == ProbeProtocol::UdpQuic {
             u64::from(*ordinal) / u64::from(batch_size)
         } else {
@@ -116,6 +142,8 @@ pub struct NetworkRiskPreview {
     pub tcp_concurrency: u32,
     pub udp_quic_concurrency: u32,
     pub min_interval_ms: u64,
+    /// 跨目标（不同 host）检验之间的间隔（用户可调）。
+    pub inter_target_interval_ms: u64,
     pub batch_size: u32,
     pub batch_cooldown_ms: u64,
     pub node_retest: u32,
@@ -194,6 +222,7 @@ pub fn risk_preview(
             .udp_quic_concurrency
             .min(HARD_LIMITS.max_udp_quic_concurrency),
         min_interval_ms: interval,
+        inter_target_interval_ms: effective_inter_target_interval(budget),
         batch_size,
         batch_cooldown_ms: cooldown,
         node_retest: budget.node_retest.min(HARD_LIMITS.max_node_retest),
@@ -248,6 +277,43 @@ mod tests {
         assert_eq!(slots[2].offset_ms, 200);
         assert_eq!(slots[3].offset_ms, 0, "不同 host 不互相延迟");
         assert_eq!(slots[0].key.host, "a.example");
+    }
+
+    #[test]
+    fn inter_target_interval_spaces_distinct_hosts_and_caps_at_hard_limit() {
+        let requests = vec![
+            request("books.google.com", "/1"),
+            request("books.google.com", "/2"),
+            request("one.google.com", "/1"),
+            request("gemini.google.com", "/1"),
+        ];
+        let mut b = budget();
+        b.inter_target_interval_ms = 500;
+        let slots = plan_slots(&requests, &b);
+        // 第一个 host rank=0 → 0；同 host 第二次由 min_interval 负责(100)
+        assert_eq!(slots[0].offset_ms, 0);
+        assert_eq!(slots[1].offset_ms, 100);
+        // 第二个新 host rank=1 → 1*500；第三个 rank=2 → 2*500
+        assert_eq!(slots[2].offset_ms, 500);
+        assert_eq!(slots[3].offset_ms, 1_000);
+
+        // 超过硬上限时封顶到 10000
+        let mut capped = budget();
+        capped.inter_target_interval_ms = HARD_LIMITS.max_inter_target_interval_ms + 5_000;
+        let capped_slots = plan_slots(&requests, &capped);
+        assert_eq!(
+            capped_slots[2].offset_ms,
+            HARD_LIMITS.max_inter_target_interval_ms
+        );
+        assert_eq!(
+            capped_slots[3].offset_ms,
+            2 * HARD_LIMITS.max_inter_target_interval_ms
+        );
+
+        // 默认 0 时不同 host 不额外延迟（向后兼容）
+        let default_slots = plan_slots(&requests, &budget());
+        assert_eq!(default_slots[2].offset_ms, 0);
+        assert_eq!(default_slots[3].offset_ms, 0);
     }
 
     #[test]

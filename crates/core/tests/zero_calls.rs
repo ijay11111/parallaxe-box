@@ -95,7 +95,7 @@ impl Transport for PartialBatch {
     }
     fn fetch<'a>(&'a self, r: FetchRequest) -> parallaxe_core::probe::BoxFuture<'a, FetchOutcome> {
         Box::pin(async move {
-            if r.target_id == "google.books" {
+            if r.target_id == "google.news" {
                 return std::future::pending().await;
             }
             FetchOutcome::failure(
@@ -113,7 +113,7 @@ impl Transport for PartialBatch {
 async fn timeout_retains_completed_anomaly_and_prioritizes_exit_two() {
     let registry = Registry::embedded().unwrap();
     let options = CheckOptions {
-        targets: vec!["google.books".into(), "google.gemini".into()],
+        targets: vec!["google.news".into(), "google.youtube".into()],
         timeout_ms: Some(200),
         ..Default::default()
     };
@@ -137,5 +137,5 @@ async fn timeout_retains_completed_anomaly_and_prioritizes_exit_two() {
         .coverage
         .uncovered
         .iter()
-        .any(|u| u.target == "google.books" && u.reason == "GLOBAL_TIMEOUT"));
+        .any(|u| u.target == "google.news" && u.reason == "GLOBAL_TIMEOUT"));
 }

@@ -7,14 +7,28 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+pub mod ai_bridge_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod app_icon;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod commands;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod folder_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod icons;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod layout;
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+pub mod plugin_host;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod plugin_ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod schedule_ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod settings_store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state;
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,6 +57,7 @@ pub fn run_gui(registry: Registry) -> Result<(), String> {
 #[allow(improper_ctypes_definitions)]
 #[no_mangle]
 pub extern "C" fn android_main(app: android_activity::AndroidApp) {
+    eprintln!("{}", parallaxe_core::distribution::BUILD_MARKER);
     let registry = match Registry::embedded() {
         Ok(registry) => registry,
         Err(error) => {

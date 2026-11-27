@@ -417,3 +417,43 @@ pub fn format_time(now: OffsetDateTime) -> String {
     now.format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
+
+/// 桌面端默认用户状态目录（永久授权唯一可写位置；绝不指向内置 `assets/`）。
+///
+/// - Windows：`%LOCALAPPDATA%\Parallaxe-box\user-state`
+/// - macOS：`$HOME/Library/Application Support/Parallaxe-box/user-state`
+/// - 其它：`$XDG_DATA_HOME/parallaxe-box/user-state` 或 `$HOME/.local/share/parallaxe-box/user-state`
+///
+/// 移动端与 wasm 返回 `None`：这两个平台不提供"永久生效"落盘能力，
+/// GUI 会明确提示并把授权限制为「仅本次」。
+pub fn default_user_state_dir() -> Option<std::path::PathBuf> {
+    if cfg!(any(
+        target_os = "android",
+        target_os = "ios",
+        target_arch = "wasm32"
+    )) {
+        return None;
+    }
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+        })
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local").join("share"))
+            })
+    }?;
+    let app = if cfg!(target_os = "windows") || cfg!(target_os = "macos") {
+        base.join("Parallaxe-box")
+    } else {
+        base.join("parallaxe-box")
+    };
+    Some(app.join("user-state"))
+}

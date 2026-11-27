@@ -13,7 +13,7 @@ Guard **绝不能**做到以下事情，也绝不作出虚假承诺：
 - 不能修改远端平台对共享出口 IP 的历史行为画像；
 - 不能恢复账号资格、订阅资格或更改付款国家；
 - 不能绕过风控、验证码或地区门槛；
-- **当前版本为纯只读预览，零写盘能力**：`operation = "PREVIEW"`、`applied = false`、`rules_written = 0`、`render_rule_preview()` 恒返回 `None`，`parallaxe guard rollback` 恒输出 `NOTHING_APPLIED`。
+- **测试版不含系统级阻断**。`guard plan` 只读，`applied=false`、`rules_written=0`。规则文件通过 `guard export --out-dir <目录>` 手动导出。闭包完整且只有 `NO_SAFE_BLOCK` 警示时，导出结果保留 `EXPORT_WARNING_NO_SAFE_BLOCK`，用户须自行审阅。
 
 固定对外边界字段：
 ```text

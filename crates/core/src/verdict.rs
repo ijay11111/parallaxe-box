@@ -147,6 +147,7 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
     };
     let edition_value = preference_value(&evidence);
 
+    let policy = crate::signals::policy_evidence(&evidence);
     let state;
     let mut reason_text: Option<String> = None;
 
@@ -165,6 +166,10 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
     } else if outcome.status.is_none() {
         let error = outcome.error.clone();
         match error.map(|error| error.kind) {
+            Some(crate::probe::TransportErrorKind::WasmOffline) => {
+                state = State::Unsupported;
+                reason_text = Some(reason::SCOPE_WASM_OFFLINE.to_string());
+            }
             Some(crate::probe::TransportErrorKind::Tls) => {
                 state = State::Unknown;
                 reason_text = Some(reason::TRANSPORT_TLS.to_string());
@@ -187,6 +192,13 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
     } else if outcome.truncated {
         state = State::Unknown;
         reason_text = Some(reason::TRUNCATED.to_string());
+    } else if let Some(decision) = policy {
+        state = if decision.value == "REGION_RESTRICTED" {
+            State::Restricted
+        } else {
+            State::Blocked
+        };
+        reason_text = decision.value.as_str().map(str::to_owned);
     } else if observed_country.is_some() {
         state = State::Ok;
     } else if edition_value.is_some() {
@@ -208,7 +220,14 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
         .filter(|e| observed_country.is_some() && country_claim(e) == observed_country)
         .collect();
     // 传输事实的高可信度不能抬高页面国家信号的低可信度。
-    let supporting = country_evidence.iter().max_by_key(|e| e.confidence);
+    let supporting = if matches!(state, State::Restricted | State::Blocked) {
+        policy
+    } else {
+        country_evidence
+            .iter()
+            .copied()
+            .max_by_key(|e| e.confidence)
+    };
     let confidence = supporting.map_or_else(
         || result_confidence(&evidence, state, outcome),
         |e| e.confidence,
@@ -240,6 +259,7 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
         .unwrap_or_default();
     let markers = {
         let mut markers = markers;
+        markers.extend(outcome.destination.markers().map(str::to_owned));
         if outcome.truncated && !markers.contains(&"TRUNCATED".to_string()) {
             markers.push("TRUNCATED".to_string());
         }
@@ -267,6 +287,7 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
         expectation.map(|spec| build_expectation(spec, state, &observed_country, outcome));
 
     ResultRecord {
+        destination: outcome.destination.clone(),
         target: target.raw.id.clone(),
         state,
         reason: reason_text,
@@ -321,7 +342,9 @@ pub fn decide(input: VerdictInput<'_>) -> ResultRecord {
         consent_version: None,
         imported_at: None,
         rule_digest: None,
-        eligibility_notes: registry.eligibility_notes_for(&target.raw.id),
+        eligibility_notes: registry.eligibility_notes_for(
+            crate::forensics::policy_product(&target.raw.url).unwrap_or(target.id()),
+        ),
     }
 }
 

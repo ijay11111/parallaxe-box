@@ -24,6 +24,7 @@ pub fn render(
     theme: ThemeMode,
     locale: Locale,
     tier: ViewportTier,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     let p = Palette::for_theme(theme);
@@ -100,7 +101,22 @@ pub fn render(
                                     2 => (p.danger_fg, p.danger_bg, p.danger_fg),
                                     _ => (p.warning_fg, p.warning_bg, p.warning_fg),
                                 };
-                                render_pill(ui, &format!("exit={code}"), fg, bg, border);
+                                let pill_text = if show_tech {
+                                    format!("exit={code}")
+                                } else {
+                                    match (code, locale) {
+                                        (0, Locale::EnUs) => "All Clear".to_string(),
+                                        (0, _) => "结果正常".to_string(),
+                                        (2, Locale::EnUs) => "Anomalies Found".to_string(),
+                                        (2, _) => "发现异常".to_string(),
+                                        (_, Locale::EnUs) => "Needs Attention".to_string(),
+                                        (_, _) => "待进一步确认".to_string(),
+                                    }
+                                };
+                                let pill = render_pill(ui, &pill_text, fg, bg, border);
+                                if show_tech {
+                                    pill.on_hover_text(format!("exit={code}"));
+                                }
                             }
                         }
                     });
@@ -136,7 +152,7 @@ pub fn render(
                                 ui,
                                 ui.make_persistent_id("minimal_cov_bar"),
                                 ratio,
-                                5.0,
+                                4.0,
                                 p.accent,
                                 p.border,
                             );
@@ -172,49 +188,45 @@ pub fn render(
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing =
+                                            egui::vec2(SPACE_2, SPACE_1);
                                         ui.label(
                                             RichText::new(service_name(&item.target))
                                                 .size(FONT_BODY)
                                                 .strong()
                                                 .color(p.text_primary),
                                         );
-                                        if !item.eligibility_notes.is_empty() {
-                                            ui.push_id(&item.target, |ui| {
-                                                if eligibility_badge_button(
-                                                    ui,
-                                                    p,
-                                                    locale,
-                                                    item.eligibility_notes.len(),
-                                                    false,
-                                                )
-                                                .clicked()
-                                                {
-                                                    actions.push(UiAction::SelectTarget(
-                                                        item.target.clone(),
-                                                    ));
-                                                }
-                                            });
-                                        }
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                render_state_badge(
-                                                    ui, item.state, theme, locale, true,
-                                                );
-                                                ui.label(
-                                                    RichText::new(country)
-                                                        .monospace()
-                                                        .strong()
-                                                        .size(FONT_BODY)
-                                                        .color(if country == "CN" {
-                                                            p.warning_fg
-                                                        } else {
-                                                            p.text_secondary
-                                                        }),
-                                                );
-                                            },
+                                        ui.label(
+                                            RichText::new(country)
+                                                .monospace()
+                                                .strong()
+                                                .size(FONT_BODY)
+                                                .color(if country == "CN" {
+                                                    p.warning_fg
+                                                } else {
+                                                    p.text_secondary
+                                                }),
                                         );
+                                        render_state_badge(ui, item.state, theme, locale, true);
                                     });
+                                    if !item.eligibility_notes.is_empty() {
+                                        ui.add_space(SPACE_1);
+                                        ui.push_id(&item.target, |ui| {
+                                            if eligibility_badge_button(
+                                                ui,
+                                                p,
+                                                locale,
+                                                item.eligibility_notes.len(),
+                                                false,
+                                            )
+                                            .clicked()
+                                            {
+                                                actions.push(UiAction::SelectTarget(
+                                                    item.target.clone(),
+                                                ));
+                                            }
+                                        });
+                                    }
                                 });
                         }
                         if r.result_order.is_empty() {
@@ -342,6 +354,23 @@ pub fn render(
                 ui.add_space(SPACE_4);
             }
             draw(ui, i, actions);
+        }
+        // 唯一主 CTA「开始检测」位于上方检测控制卡内；三卡下方仅保留次级跳转入口（>= 44px 触控高度）。
+        ui.add_space(SPACE_4);
+        let cta_w = ui.available_width();
+        let detail = ui.add_sized(
+            [cta_w, 44.0],
+            egui::Button::new(
+                RichText::new(translate(locale, "gui.minimal.link.services", &[]))
+                    .size(FONT_BODY)
+                    .color(p.text_primary),
+            )
+            .fill(p.card)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .rounding(Rounding::same(RADIUS_MD)),
+        );
+        if detail.clicked() {
+            actions.push(UiAction::SwitchTab(ActiveTab::Services));
         }
     } else {
         spaced_columns(ui, 3, SPACE_4, |col_ui, i| {

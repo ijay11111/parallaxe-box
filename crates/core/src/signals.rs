@@ -247,6 +247,17 @@ fn content_ok(sample: &Sample, detection: &Detection) -> bool {
     sample.body.len() as u64 >= detection.min_text_bytes
 }
 
+pub(crate) fn policy_evidence(items: &[Evidence]) -> Option<&Evidence> {
+    items.iter().find(|e| {
+        e.rule_id == "first-party.product-policy"
+            && e.claim == "service.policy_decision"
+            && matches!(
+                e.value.as_str(),
+                Some("REGION_RESTRICTED" | "POLICY_BLOCKED")
+            )
+    })
+}
+
 /// 枚举某目标启用的规则，逐条提取。
 pub fn evaluate(
     registry: &Registry,
@@ -262,9 +273,45 @@ pub fn evaluate(
         .location
         .as_deref()
         .and_then(|loc| url::Url::parse(&target.raw.url).ok()?.join(loc).ok());
-    let stop = detect(sample, detection, location.as_ref());
+    // 首跳 Location 仅用于 rule.redirect 取证；若最终已拿到 200 正文
+    // （目标声明了 max_redirects 并跟随到落地页），不再因首跳跳登录而中止正文解析。
+    let stop_location = if sample.status == Some(200) {
+        None
+    } else {
+        location.as_ref()
+    };
+    let stop = detect(sample, detection, stop_location);
     let content_allowed = stop.is_none() && content_ok(sample, detection);
     let mut out = Vec::new();
+    if stop.is_none()
+        && (registry.is_embedded_target(target.id()) || registry.is_user_imported(target.id()))
+    {
+        if let Some(policy) = crate::forensics::policy_outcome(target, sample) {
+            out.push(Evidence {
+                id: format!("ev-{}-product-policy", target.id()),
+                target_id: target.id().into(),
+                sample_id: format!("smp-{}-1", target.id()),
+                rule_id: "first-party.product-policy".into(),
+                rule_version: 1,
+                observed_at: observed_at.into(),
+                layer: crate::Layer::ServicePolicy.into(),
+                claim: "service.policy_decision".into(),
+                value: Value::from(policy.as_str()),
+                source_type: Source::DirectAnonymousObservation,
+                source_ref: target.raw.url.clone(),
+                confidence: Confidence::High,
+                path_id: path_id.into(),
+                origin: if fixture { "fixture" } else { "live" }.into(),
+                reason: None,
+                fixture,
+                freshness: Freshness {
+                    status: crate::FreshnessStatus::Current,
+                    last_hit_at: Some(observed_at.into()),
+                    comparable_misses: 0,
+                },
+            });
+        }
+    }
     let rules = registry.rules_for(target);
     for rule in &rules {
         let kind = rule.extract.kind.as_str();
@@ -390,6 +437,9 @@ pub fn evaluate(
                             "rule.inline3" => "inline3_country",
                             "rule.yt-gl" => "edition.gl",
                             "rule.flag" => "store_region_flag",
+                            "rule.tos-loc" => "tos_region",
+                            "rule.one-region" => "one_region",
+                            "rule.play-footer" => "store_region",
                             _ => "regex_value",
                         };
                         let confidence = rule.credibility;
@@ -598,7 +648,12 @@ pub fn country_claim(evidence: &Evidence) -> Option<String> {
     }
     if !matches!(
         evidence.claim.as_str(),
-        "inline3_country" | "trace.loc" | "meta.country"
+        "inline3_country"
+        | "trace.loc"
+        | "meta.country"
+        | "tos_region"
+        | "one_region"
+        | "store_region"
     ) {
         return None;
     }
@@ -606,7 +661,41 @@ pub fn country_claim(evidence: &Evidence) -> Option<String> {
         Value::String(text) => text.clone(),
         _ => return None,
     };
+    // One/Play/TOS 页面按 IP 显示的是国家名（如 "United States"、"China"），
+    // 不是两字母码；先做保守映射，未识别的国家名仍弃权（不猜）。
+    if let Some(code) = country_name_to_code(&raw) {
+        return Some(code);
+    }
     crate::contracts::normalize_country(&raw)
+}
+
+/// 仅映射公开页明确展示的常见国家名；不做模糊/前缀匹配，未知一律 None。
+fn country_name_to_code(name: &str) -> Option<String> {
+    // Play 页脚值可能是 "Singapore (English)" / "China (English (United States))"，
+    // 只取括号前的国家名部分。
+    let base = name.split('(').next().unwrap_or(name).trim();
+    let key = base.to_ascii_lowercase();
+    let code = match key.as_str() {
+        "united states" | "united states of america" => "US",
+        "china" | "people's republic of china" => "CN",
+        "japan" => "JP",
+        "taiwan" => "TW",
+        "singapore" => "SG",
+        "germany" => "DE",
+        "netherlands" => "NL",
+        "france" => "FR",
+        "thailand" => "TH",
+        "south korea" | "korea" => "KR",
+        "hong kong" => "HK",
+        "macao" | "macau" => "MO",
+        "united kingdom" => "GB",
+        "canada" => "CA",
+        "australia" => "AU",
+        "india" => "IN",
+        "russia" => "RU",
+        _ => return None,
+    };
+    Some(code.to_string())
 }
 
 /// 校验抽取器字段（供配置测试）。

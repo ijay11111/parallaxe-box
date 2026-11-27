@@ -60,6 +60,8 @@ Parallaxe box 将所有信号提取规则集中在独立的 `assets/signal-rules
 
 ---
 
+<a id="signal-freshness"></a>
+
 ## 4. `SIGNAL_STALE` 规则新鲜度机制（N=3 与 `--state-dir`）
 
 当网站改版导致原本能命中的解析规则持续失效时，需要区分「偶发缺失」与「规则失效」：

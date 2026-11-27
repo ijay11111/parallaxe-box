@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use parallaxe_core::probe::{run_batch, FetchRequest, HttpTransport, Transport};
+use parallaxe_core::probe::{run_batch, FetchOutcome, FetchRequest, HttpTransport, Transport};
 use parallaxe_core::targets::{Budget, HARD_LIMITS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -177,6 +177,15 @@ async fn budget_and_anonymity_hold() {
     for (_, outcome) in &outcomes {
         assert_eq!(outcome.request_count, 1, "单目标一次逻辑 GET");
         assert!(outcome.complete, "样本应完整");
+        let mut edge = outcome.destination.clone();
+        assert!(edge.peer_observed && edge.peer_address.is_none());
+        assert_eq!(
+            edge.address_consistency,
+            parallaxe_core::destination::Comparison::Match
+        );
+        edge.set_show_ip(true);
+        assert_eq!(edge.peer_address, Some(address.ip()));
+        assert!(edge.resolved_addresses.contains(&address.ip()));
         assert!(
             String::from_utf8_lossy(&outcome.body).contains("USA"),
             "正文应被有界读取"
@@ -312,6 +321,72 @@ fn reserved_destinations_and_proxy_credentials_are_rejected() {
         "http://proxy.invalid:bad",
     ] {
         assert!(HttpTransport::new(Some(uri.into()), None).is_err());
+    }
+}
+
+struct StopOnHttpStatus {
+    status: u16,
+    started: AtomicUsize,
+}
+
+impl Transport for StopOnHttpStatus {
+    fn fetch<'a>(&'a self, _: FetchRequest) -> parallaxe_core::probe::BoxFuture<'a, FetchOutcome> {
+        let call = self.started.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if call == 0 {
+                FetchOutcome {
+                    destination: Default::default(),
+                    status: Some(self.status),
+                    content_type: None,
+                    location: None,
+                    body: Vec::new(),
+                    complete: true,
+                    truncated: false,
+                    attempts: Vec::new(),
+                    request_count: 1,
+                    error: None,
+                    observed_family: None,
+                }
+            } else {
+                std::future::pending().await
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn http_403_and_429_stop_queued_requests() {
+    for status in [403, 429] {
+        let transport = Arc::new(StopOnHttpStatus {
+            status,
+            started: AtomicUsize::new(0),
+        });
+        let requests: Vec<_> = (0..8)
+            .map(|index| request("127.0.0.1:1".parse().unwrap(), &format!("/{index}")))
+            .collect();
+        let (_tx, rx) = watch::channel(false);
+        let outcomes = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_batch(
+                transport.clone(),
+                requests,
+                Budget {
+                    max_concurrency: 1,
+                    per_host: 1,
+                    ..fast_budget()
+                },
+                rx,
+            ),
+        )
+        .await
+        .expect("403/429 后批次必须及时停止");
+        assert_eq!(outcomes.len(), 1, "只保留触发停止的那个响应");
+        assert_eq!(outcomes[0].1.status, Some(status));
+        assert_eq!(
+            transport.started.load(Ordering::SeqCst),
+            1,
+            "403/429 后不得再启动排队请求"
+        );
     }
 }
 

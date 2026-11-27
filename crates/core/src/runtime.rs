@@ -37,13 +37,23 @@ pub struct CheckOptions {
     pub fixture: Option<String>,
     pub state_dir: Option<PathBuf>,
     pub proxy: Option<String>,
+    /// 代理模式（默认自动；未配置任何代理时也走自动探测）。
+    pub proxy_mode: crate::proxy::ProxyMode,
+    /// PAC 网址（仅 `proxy_mode = Pac` 使用）。
+    pub pac_url: Option<String>,
+    /// 前端在启动运行前写入的实际路径结论（`DIRECT_SELECTED`/`PROXY_SELECTED`/`HTTP`/`PAC`）。
+    pub proxy_path: Option<String>,
+    /// 前端写入的路径探测摘要，进入 `path.reason`。
+    pub proxy_note: Option<String>,
     pub interface: Option<String>,
     pub ipv4: bool,
     pub fast: bool,
     pub timeout_ms: Option<u64>,
     pub max_concurrency: Option<u32>,
-    /// T-7-09a：同 host / 节点 / 协议发送间隔（0–5000ms）。
+    /// 同 host / 节点 / 协议发送间隔（0–10000ms）。
     pub min_interval_ms: Option<u64>,
+    /// 跨目标（不同 host）检验之间的间隔（0–10000ms）。
+    pub inter_target_interval_ms: Option<u64>,
     /// 小批次大小（1–15）。
     pub batch_size: Option<u32>,
     /// 批次冷却（0–60000ms）。
@@ -56,6 +66,8 @@ pub struct CheckOptions {
     pub confirm_budget: bool,
     /// 节点筛选模式：每节点只做低噪声最小探针（需要 --proxy）。
     pub node_sweep: bool,
+    /// Optional live pause/resume handle scoped to this run.
+    pub qos_control: Option<probe::QosControl>,
     pub run_id: Option<String>,
 }
 
@@ -72,7 +84,9 @@ fn next_run_id(now: OffsetDateTime) -> String {
 }
 
 fn path_for(options: &CheckOptions) -> Result<(Path, Option<PathDiagnostic>), ConfigError> {
-    let mut path = Path::system(if options.proxy.is_some() {
+    let mut path = Path::system(if options.proxy_path.is_some() {
+        "path-proxy-plan"
+    } else if options.proxy.is_some() {
         "path-proxy"
     } else if options.interface.is_some() {
         "path-interface"
@@ -84,16 +98,28 @@ fn path_for(options: &CheckOptions) -> Result<(Path, Option<PathDiagnostic>), Co
     } else {
         RequestedFamily::Auto
     };
+    // 前端已在产生网络 I/O 前完成模式选择/端口探测：如实记录实际选择与摘要。
+    if let Some(label) = &options.proxy_path {
+        path.proxy_mode = label.clone();
+        path.reason = options.proxy_note.clone();
+        if label.contains("PROXY") || label == "HTTP" {
+            path.proxy_ref = Some("detected-proxy".to_string());
+        }
+    }
     // 枚举到接口不证明本次请求经过它；未验证字段保持 null。
     let mut diagnostic = None;
     if let Some(proxy) = &options.proxy {
         if proxy.contains('@') {
             return Err(ConfigError::field("--proxy", "拒绝带凭据的代理 URI"));
         }
-        path.proxy_mode = "PROXY".to_string();
-        path.proxy_ref = Some("explicit-proxy".to_string());
+        if options.proxy_path.is_none() {
+            path.proxy_mode = "PROXY".to_string();
+            path.proxy_ref = Some("explicit-proxy".to_string());
+            path.reason = Some(reason::PROXY_REMOTE_UNVERIFIED.to_string());
+        } else if options.proxy_path.as_deref() == Some("HTTP") {
+            path.proxy_ref = Some("explicit-proxy".to_string());
+        }
         path.bind_status = BindStatus::Unknown;
-        path.reason = Some(reason::PROXY_REMOTE_UNVERIFIED.to_string());
         diagnostic = Some(PathDiagnostic::ProxyRemoteUnverified);
     }
     if let Some(interface) = &options.interface {
@@ -124,6 +150,7 @@ fn budget_json(budget: &crate::targets::Budget) -> serde_json::Value {
         "max_body_bytes": budget.max_body_bytes,
         "v6_fallback_after_ms": budget.v6_fallback_after_ms,
         "min_interval_ms": budget.min_interval_ms,
+        "inter_target_interval_ms": budget.inter_target_interval_ms,
         "batch_size": budget.batch_size,
         "udp_quic_concurrency": budget.udp_quic_concurrency,
         "tcp_concurrency": budget.tcp_concurrency,
@@ -142,6 +169,15 @@ fn apply_budget_overrides(
             return Err(ConfigError::field("--min-interval-ms", "超出可设范围"));
         }
         budget.min_interval_ms = interval;
+    }
+    if let Some(interval) = options.inter_target_interval_ms {
+        if interval > crate::targets::HARD_LIMITS.max_inter_target_interval_ms {
+            return Err(ConfigError::field(
+                "--inter-target-interval-ms",
+                "超出可设范围",
+            ));
+        }
+        budget.inter_target_interval_ms = interval;
     }
     if let Some(batch_size) = options.batch_size {
         if batch_size == 0 || batch_size > crate::targets::HARD_LIMITS.max_batch_size {
@@ -196,10 +232,12 @@ pub fn network_plan(
         budget.node_retest = 0;
     }
     if let Some(timeout) = options.timeout_ms {
-        if timeout == 0 || timeout > crate::targets::HARD_LIMITS.max_run_timeout_ms {
+        if timeout > crate::targets::HARD_LIMITS.max_run_timeout_ms {
             return Err(ConfigError::field("--timeout", "超出可设范围"));
         }
-        budget.run_timeout_ms = budget.run_timeout_ms.min(timeout);
+        // timeout = 0 表示用户显式选择“不限时”；非零值覆盖 profile 预算，
+        // 但仍先经 HARD_LIMITS 校验（simple 默认 0 不会被 min(0, N) 吞掉用户设置）。
+        budget.run_timeout_ms = timeout;
     }
     if let Some(concurrency) = options.max_concurrency {
         if concurrency == 0 || concurrency > crate::targets::HARD_LIMITS.max_concurrency {
@@ -229,6 +267,39 @@ pub fn network_plan(
         &budget,
         options.node_sweep,
     ))
+}
+
+/// 运行前网络路径准备：展开选集 → 汇总 host → 探测/求值代理模式。
+///
+/// 会产生**有界 TCP 探测**（端口连通 + HTTP CONNECT 握手），不发送任何目标 HTTP
+/// 请求；`--plan` 不应调用本函数（保持零发包）。
+pub async fn prepare_network(
+    registry: &Registry,
+    options: &CheckOptions,
+) -> Result<crate::proxy::NetworkPrep, ConfigError> {
+    let selection = registry.select(
+        options.profile.as_deref(),
+        &options.groups,
+        &options.targets,
+        options.full,
+    )?;
+    let mut hosts: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for id in &selection.ids {
+        if let Some(target) = registry.get(id) {
+            let host = target.host().to_ascii_lowercase();
+            if seen.insert(host.clone()) {
+                hosts.push(host);
+            }
+        }
+    }
+    crate::proxy::prepare(
+        options.proxy_mode,
+        options.proxy.as_deref(),
+        options.pac_url.as_deref(),
+        &hosts,
+    )
+    .await
 }
 
 /// 目录顺序的覆盖快照：已覆盖 + 未覆盖（已选/未选），每个 ID 恰出现一次。
@@ -274,6 +345,7 @@ fn empty_result(
     diagnostic: &str,
 ) -> ResultRecord {
     ResultRecord {
+        destination: Default::default(),
         target: target.raw.id.clone(),
         state,
         reason: Some(reason_text.to_string()),
@@ -399,7 +471,7 @@ pub async fn run_check_streaming(
     {
         return Err(ConfigError::field("check", "合成准入只允许离线替身"));
     }
-    if options.fixture.is_some() {
+    if let Some(case_id) = &options.fixture {
         if options.profile.is_some()
             || options.full
             || !options.groups.is_empty()
@@ -419,7 +491,15 @@ pub async fn run_check_streaming(
                 "与 --proxy/--interface 互斥",
             ));
         }
-        return run_fixture(registry, options, &run_id, started, event_tx).await;
+        return run_fixture(
+            registry,
+            case_id,
+            &run_id,
+            options.expect.as_deref(),
+            now,
+            event_tx,
+            || started.elapsed().as_millis() as u64,
+        );
     }
 
     if options.node_sweep && options.proxy.is_none() {
@@ -446,10 +526,12 @@ pub async fn run_check_streaming(
         budget.node_retest = 0;
     }
     if let Some(timeout) = options.timeout_ms {
-        if timeout == 0 || timeout > crate::targets::HARD_LIMITS.max_run_timeout_ms {
+        if timeout > crate::targets::HARD_LIMITS.max_run_timeout_ms {
             return Err(ConfigError::field("--timeout", "超出可设范围"));
         }
-        budget.run_timeout_ms = budget.run_timeout_ms.min(timeout);
+        // timeout = 0 表示用户显式选择“不限时”；非零值覆盖 profile 预算，
+        // 但仍先经 HARD_LIMITS 校验（simple 默认 0 不会被 min(0, N) 吞掉用户设置）。
+        budget.run_timeout_ms = timeout;
     }
     if let Some(concurrency) = options.max_concurrency {
         if concurrency == 0 || concurrency > crate::targets::HARD_LIMITS.max_concurrency {
@@ -611,56 +693,64 @@ pub async fn run_check_streaming(
                 host: target.host(),
                 method: target.defaults.method.clone(),
                 family: requested_family,
-                protocol: crate::forensics::ProbeProtocol::TcpHttp,
+                protocol: transport.binding(id).0,
                 timeout_ms: budget.request_timeout_ms,
                 max_body_bytes: target.defaults.max_body_bytes.min(budget.max_body_bytes),
-                max_redirects: target.defaults.max_redirects.min(budget.max_redirects),
+                max_redirects: target
+                    .max_redirects()
+                    .min(crate::targets::HARD_LIMITS.max_redirects),
             };
             requests.push(request);
         }
         let cancel_requested = *cancel_rx.borrow();
-        let (outcomes, timed_out) =
-            probe::run_batch_checked(transport, requests, budget, cancel_rx.clone()).await?;
+        let batch = probe::run_batch_checked(
+            transport,
+            requests,
+            budget,
+            cancel_rx.clone(),
+            options.qos_control.clone().unwrap_or_default(),
+        )
+        .await?;
+        let timed_out = batch.timed_out;
+        let stopped_for_http = batch.stopped_for_http;
         if cancel_requested || *cancel_rx.borrow() {
             termination = Termination::Cancelled;
         } else if timed_out {
             termination = Termination::GlobalTimeout;
+        } else if stopped_for_http {
+            termination = Termination::Partial;
         }
-        let mut by_target: HashMap<String, FetchOutcome> = outcomes.into_iter().collect();
+        let mut by_target: HashMap<_, _> = batch
+            .items
+            .into_iter()
+            .map(|(id, out, markers)| (id, (out, markers)))
+            .collect();
         for id in &admitted_ids {
             let target = registry
                 .get(id)
                 .ok_or_else(|| ConfigError::field("check", format!("未知目标 {id}")))?;
-            let outcome = match by_target.remove(id) {
+            let (outcome, qos_markers) = match by_target.remove(id) {
                 Some(outcome) => outcome,
                 None => {
+                    let missing_reason = if stopped_for_http {
+                        reason::QOS_HTTP_STOP
+                    } else if termination == Termination::GlobalTimeout {
+                        reason::GLOBAL_TIMEOUT
+                    } else {
+                        reason::CANCELLED
+                    };
                     let mut result = empty_result(
                         target,
                         &path,
                         State::Unknown,
-                        if termination == Termination::GlobalTimeout {
-                            reason::GLOBAL_TIMEOUT
-                        } else {
-                            reason::CANCELLED
-                        },
-                        if timed_out {
-                            reason::GLOBAL_TIMEOUT
-                        } else {
-                            reason::CANCELLED
-                        },
+                        missing_reason,
+                        missing_reason,
                     );
                     result.expectation = expectation
                         .as_ref()
                         .map(crate::verdict::expectation_for_empty);
                     attach_user_audit(registry, target, &mut result);
-                    reasons.insert(
-                        id.clone(),
-                        if termination == Termination::GlobalTimeout {
-                            reason::GLOBAL_TIMEOUT.to_string()
-                        } else {
-                            reason::CANCELLED.to_string()
-                        },
-                    );
+                    reasons.insert(id.clone(), missing_reason.to_string());
                     log.target_started(id, &path.path_id, 1);
                     log.target_finished(&result);
                     results.push(result);
@@ -693,6 +783,12 @@ pub async fn run_check_streaming(
                 cancelled: false,
                 global_timeout: false,
             });
+            if let Some(marker) =
+                crate::forensics::service_contract_marker(target, &sample, &result)
+            {
+                result.risk_signal.markers.push(marker);
+            }
+            result.risk_signal.markers.extend(qos_markers);
             attach_user_audit(registry, target, &mut result);
             for item in &result.evidence {
                 log.evidence_observed(id, item);
@@ -729,18 +825,25 @@ pub async fn run_check_streaming(
     })
 }
 
-/// 执行已登记的离线 fixture 案例。
-async fn run_fixture(
+/// 使用指定时刻回放合成样本。无需系统时钟、Tokio 运行时或网络权限。
+pub fn replay_fixture(
     registry: &Registry,
-    options: &CheckOptions,
+    case_id: &str,
     run_id: &str,
-    started: Instant,
-    event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::contracts::Event>>,
+    now: OffsetDateTime,
 ) -> Result<RunOutput, ConfigError> {
-    let case_id = options
-        .fixture
-        .as_deref()
-        .ok_or_else(|| ConfigError::field("--fixture", "缺少案例 ID"))?;
+    run_fixture(registry, case_id, run_id, None, now, None, || 0)
+}
+
+fn run_fixture(
+    registry: &Registry,
+    case_id: &str,
+    run_id: &str,
+    expect: Option<&str>,
+    now: OffsetDateTime,
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::contracts::Event>>,
+    elapsed_ms: impl FnOnce() -> u64,
+) -> Result<RunOutput, ConfigError> {
     let case = fixtures::find(case_id).ok_or_else(|| {
         ConfigError::field(
             format!("--fixture {case_id}"),
@@ -750,10 +853,13 @@ async fn run_fixture(
     let target = registry
         .get(case.target_id)
         .ok_or_else(|| ConfigError::field("fixture", "目标不存在"))?;
-    let now = OffsetDateTime::now_utc();
     let store = NullStore::default();
-    let expectation = Registry::build_expectation(options.expect.as_deref())?;
-    let path = Path::system("path-fixture");
+    let expectation = Registry::build_expectation(expect)?;
+    let mut path = Path::system("path-fixture");
+    if case.id == "address-proxy" {
+        path.proxy_mode = "EXPLICIT".into();
+        path.proxy_ref = Some("proxy-fixture".into());
+    }
     let mut log = EventLog::with_sink(run_id, true, now, event_tx);
     log.run_started(
         "FIXTURE",
@@ -785,6 +891,7 @@ async fn run_fixture(
         request_sent: case.sample.status.is_some(),
     }];
     let outcome = FetchOutcome {
+        destination: case.destination(),
         status: case.sample.status,
         content_type: case.sample.content_type.clone(),
         location: case.sample.location.clone(),
@@ -833,7 +940,7 @@ async fn run_fixture(
     report.simulated_request_count = case.expected_request_count;
     report.network_request_count = 0;
     report.termination = Termination::Complete;
-    report.wall_duration_ms = started.elapsed().as_millis() as u64;
+    report.wall_duration_ms = elapsed_ms();
     report.exit_code = reports::aggregate_report(&report);
     log.coverage_updated(&report.coverage);
     log.run_finished(&report);
@@ -1040,6 +1147,7 @@ pub async fn run_user_import_offline_preview(
         let evaluation =
             signals::evaluate(registry, target, &sample, &path.path_id, &now_str, true);
         let outcome = FetchOutcome {
+            destination: Default::default(),
             status: sample.status,
             content_type: sample.content_type.clone(),
             location: sample.location.clone(),

@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+distribution-release = ["parallaxe-core/distribution-release"]
+
 [dependencies]
 parallaxe-core = { path = "../core" }
 serde.workspace = true

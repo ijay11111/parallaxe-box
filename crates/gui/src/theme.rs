@@ -493,58 +493,103 @@ pub fn layer_label_localized(layer: Layer, locale: Locale) -> (String, &'static 
 
 /// Evidence 层的标签（包含 `TRANSPORT` 伪层）。
 pub fn layer_ref_label(layer: LayerRef) -> &'static str {
+    layer_ref_label_plain(layer, true)
+}
+
+/// Evidence 层的可读标签；`show_tech = false` 时隐藏英文机器码。
+pub fn layer_ref_label_plain(layer: LayerRef, show_tech: bool) -> &'static str {
     match layer {
         LayerRef::Layer(inner) => layer_label(inner).0,
-        LayerRef::Transport(_) => "传输层 (TRANSPORT)",
+        LayerRef::Transport(_) => {
+            if show_tech {
+                "传输层 (TRANSPORT)"
+            } else {
+                "传输连接"
+            }
+        }
     }
 }
 
 /// 可信度穷举标签。
 pub fn confidence_label(confidence: Confidence) -> &'static str {
-    match confidence {
-        Confidence::High => "高 (HIGH)",
-        Confidence::Medium => "中 (MEDIUM)",
-        Confidence::Low => "低 (LOW)",
-        Confidence::None => "无 (NONE)",
+    confidence_label_plain(confidence, true)
+}
+
+pub fn confidence_label_plain(confidence: Confidence, show_tech: bool) -> &'static str {
+    match (confidence, show_tech) {
+        (Confidence::High, true) => "高 (HIGH)",
+        (Confidence::Medium, true) => "中 (MEDIUM)",
+        (Confidence::Low, true) => "低 (LOW)",
+        (Confidence::None, true) => "无 (NONE)",
+        (Confidence::High, false) => "高",
+        (Confidence::Medium, false) => "中",
+        (Confidence::Low, false) => "低",
+        (Confidence::None, false) => "无",
     }
 }
 
 /// 来源类别穷举标签。
 pub fn source_label(source: Source) -> &'static str {
-    match source {
-        Source::OfficialDoc => "官方文档 (OFFICIAL_DOC)",
-        Source::DirectAnonymousObservation => "匿名直接观测 (DIRECT_ANONYMOUS_OBSERVATION)",
-        Source::CommunityReport => "社区资料 (COMMUNITY_REPORT)",
-        Source::LegacyCode => "历史代码 (LEGACY_CODE)",
-        Source::Inference => "推断 (INFERENCE)",
+    source_label_plain(source, true)
+}
+
+pub fn source_label_plain(source: Source, show_tech: bool) -> &'static str {
+    match (source, show_tech) {
+        (Source::OfficialDoc, true) => "官方文档 (OFFICIAL_DOC)",
+        (Source::DirectAnonymousObservation, true) => "匿名直接观测 (DIRECT_ANONYMOUS_OBSERVATION)",
+        (Source::CommunityReport, true) => "社区资料 (COMMUNITY_REPORT)",
+        (Source::LegacyCode, true) => "历史代码 (LEGACY_CODE)",
+        (Source::Inference, true) => "推断 (INFERENCE)",
+        (Source::OfficialDoc, false) => "官方文档",
+        (Source::DirectAnonymousObservation, false) => "匿名直接观测",
+        (Source::CommunityReport, false) => "社区资料",
+        (Source::LegacyCode, false) => "历史资料",
+        (Source::Inference, false) => "综合推断",
     }
 }
 
 /// 新鲜度状态穷举标签。
 pub fn freshness_label(status: FreshnessStatus) -> &'static str {
-    match status {
-        FreshnessStatus::Current => "当前有效 (CURRENT)",
-        FreshnessStatus::Missing => "本次缺失 (MISSING)",
-        FreshnessStatus::Stale => "连续失效 (STALE)",
-        FreshnessStatus::Historical => "历史记录 (>7天)",
-        FreshnessStatus::NotTracked => "未跟踪 (NOT_TRACKED)",
+    freshness_label_plain(status, true)
+}
+
+pub fn freshness_label_plain(status: FreshnessStatus, show_tech: bool) -> &'static str {
+    match (status, show_tech) {
+        (FreshnessStatus::Current, true) => "当前有效 (CURRENT)",
+        (FreshnessStatus::Missing, true) => "本次缺失 (MISSING)",
+        (FreshnessStatus::Stale, true) => "连续失效 (STALE)",
+        (FreshnessStatus::Historical, true) => "历史记录 (>7天)",
+        (FreshnessStatus::NotTracked, true) => "未跟踪 (NOT_TRACKED)",
+        (FreshnessStatus::Current, false) => "当前有效",
+        (FreshnessStatus::Missing, false) => "本次缺失",
+        (FreshnessStatus::Stale, false) => "连续失效",
+        (FreshnessStatus::Historical, false) => "历史记录 (>7天)",
+        (FreshnessStatus::NotTracked, false) => "未跟踪",
     }
 }
 
 /// 路径绑定状态穷举标签。
 pub fn bind_status_label(status: BindStatus) -> &'static str {
-    match status {
-        BindStatus::NotRequested => "未请求 (NOT_REQUESTED)",
-        BindStatus::Verified => "已验证 (VERIFIED)",
-        BindStatus::Unsupported => "不支持 (UNSUPPORTED)",
-        BindStatus::Unknown => "未验证 (UNKNOWN)",
+    bind_status_label_plain(status, true)
+}
+
+pub fn bind_status_label_plain(status: BindStatus, show_tech: bool) -> &'static str {
+    match (status, show_tech) {
+        (BindStatus::NotRequested, true) => "未请求 (NOT_REQUESTED)",
+        (BindStatus::Verified, true) => "已验证 (VERIFIED)",
+        (BindStatus::Unsupported, true) => "不支持 (UNSUPPORTED)",
+        (BindStatus::Unknown, true) => "未验证 (UNKNOWN)",
+        (BindStatus::NotRequested, false) => "未指定",
+        (BindStatus::Verified, false) => "已验证",
+        (BindStatus::Unsupported, false) => "不支持",
+        (BindStatus::Unknown, false) => "未验证",
     }
 }
 
 /// 请求地址族穷举标签。
 pub fn requested_family_label(family: RequestedFamily) -> &'static str {
     match family {
-        RequestedFamily::Auto => "AUTO",
+        RequestedFamily::Auto => "自动双栈",
         RequestedFamily::V4 => "IPv4",
         RequestedFamily::V6 => "IPv6",
     }
@@ -555,55 +600,83 @@ pub fn observed_family_label(family: Option<ObservedFamily>) -> &'static str {
     match family {
         Some(ObservedFamily::V4) => "IPv4",
         Some(ObservedFamily::V6) => "IPv6",
-        None => "未知 (null)",
+        None => "未知",
     }
 }
 
 /// 运行模式标签。
 pub fn mode_label(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Online => "在线只读 (ONLINE)",
-        Mode::Fixture => "离线模拟 (FIXTURE)",
+    mode_label_plain(mode, true)
+}
+
+pub fn mode_label_plain(mode: Mode, show_tech: bool) -> &'static str {
+    match (mode, show_tech) {
+        (Mode::Online, true) => "在线只读 (ONLINE)",
+        (Mode::Fixture, true) => "离线模拟 (FIXTURE)",
+        (Mode::Online, false) => "在线只读",
+        (Mode::Fixture, false) => "离线模拟",
     }
 }
 
 /// 运行终止原因标签。
 pub fn termination_label(termination: Termination) -> &'static str {
-    match termination {
-        Termination::Complete => "已完成 (COMPLETE)",
-        Termination::Cancelled => "已取消 (CANCELLED)",
-        Termination::GlobalTimeout => "全局超时 (GLOBAL_TIMEOUT)",
-        Termination::Failed => "运行失败 (FAILED)",
-        Termination::Partial => "部分完成 (PARTIAL)",
+    termination_label_plain(termination, true)
+}
+
+pub fn termination_label_plain(termination: Termination, show_tech: bool) -> &'static str {
+    match (termination, show_tech) {
+        (Termination::Complete, true) => "已完成 (COMPLETE)",
+        (Termination::Cancelled, true) => "已取消 (CANCELLED)",
+        (Termination::GlobalTimeout, true) => "全局超时 (GLOBAL_TIMEOUT)",
+        (Termination::Failed, true) => "运行失败 (FAILED)",
+        (Termination::Partial, true) => "部分完成 (PARTIAL)",
+        (Termination::Complete, false) => "已完成",
+        (Termination::Cancelled, false) => "已取消",
+        (Termination::GlobalTimeout, false) => "全局超时",
+        (Termination::Failed, false) => "运行失败",
+        (Termination::Partial, false) => "部分完成",
     }
 }
 
 /// `--expect` 比较结果标签。
 pub fn expectation_status_label(status: ExpectationStatus) -> &'static str {
-    match status {
-        ExpectationStatus::Match => "一致 (MATCH)",
-        ExpectationStatus::Mismatch => "差异提示 (MISMATCH)",
-        ExpectationStatus::NotObservable => "不可观测 (NOT_OBSERVABLE)",
+    expectation_status_label_plain(status, true)
+}
+
+pub fn expectation_status_label_plain(status: ExpectationStatus, show_tech: bool) -> &'static str {
+    match (status, show_tech) {
+        (ExpectationStatus::Match, true) => "一致 (MATCH)",
+        (ExpectationStatus::Mismatch, true) => "差异提示 (MISMATCH)",
+        (ExpectationStatus::NotObservable, true) => "不可观测 (NOT_OBSERVABLE)",
+        (ExpectationStatus::Match, false) => "一致",
+        (ExpectationStatus::Mismatch, false) => "存在差异",
+        (ExpectationStatus::NotObservable, false) => "暂不可观测",
     }
 }
 
 /// 退出码语义说明（严格对齐 ADR-003）。
 pub fn exit_code_label(code: u8) -> (&'static str, &'static str) {
-    match code {
-        0 => (
-            "0 · 全部可接受",
-            "全部已测目标处于可接受状态（仍须核对未覆盖栏）",
-        ),
-        1 => ("1 · 配置/运行错误", "输入被拒绝或运行内部异常"),
-        2 => (
+    exit_code_label_plain(code, false)
+}
+
+pub fn exit_code_label_plain(code: u8, show_tech: bool) -> (&'static str, &'static str) {
+    match (code, show_tech) {
+        (0, _) => ("结果正常", "全部已测目标处于可接受状态（仍须核对未覆盖栏）"),
+        (1, _) => ("配置或运行错误", "输入被拒绝或运行内部异常"),
+        (2, true) => (
             "2 · 明确异常",
             "存在 RESTRICTED / BLOCKED / LOCAL_PATH_ERROR（优先于 3 类披露）",
         ),
-        3 => (
+        (2, false) => ("发现明确异常", "存在受限、阻断或本机连接路径异常"),
+        (3, true) => (
             "3 · 不确定/未完成",
             "存在 UNKNOWN / CONFLICT / SIGNAL_STALE / UNSUPPORTED / 未覆盖选中项或已取消",
         ),
-        _ => ("未知退出码", "非标准退出码"),
+        (3, false) => (
+            "部分未完成或待确认",
+            "存在未知项、信号冲突、规则失效、未覆盖项或已取消",
+        ),
+        (_, _) => ("未知状态", "非标准退出码"),
     }
 }
 
@@ -696,13 +769,13 @@ pub fn apply_theme(ctx: &Context, mode: ThemeMode) {
             .text_styles
             .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.5));
         style.spacing.item_spacing = vec2(SPACE_2, SPACE_2);
-        style.spacing.button_padding = vec2(SPACE_3, SPACE_1 + 2.0);
-        style.spacing.interact_size.y = 30.0;
+        style.spacing.button_padding = vec2(SPACE_3, SPACE_2);
+        style.spacing.interact_size.y = 32.0;
         style.spacing.scroll.floating = false;
         style.spacing.scroll.foreground_color = false;
-        style.spacing.scroll.bar_width = 6.0;
-        style.spacing.scroll.bar_inner_margin = 4.0;
-        style.spacing.scroll.bar_outer_margin = 2.0;
+        style.spacing.scroll.bar_width = 4.0;
+        style.spacing.scroll.bar_inner_margin = SPACE_1;
+        style.spacing.scroll.bar_outer_margin = SPACE_1;
     });
 }
 
@@ -711,15 +784,22 @@ pub fn apply_theme(ctx: &Context, mode: ThemeMode) {
 /// 优先使用内嵌的开源 CJK 子集（Android/Web 上没有系统字体路径），再回退系统字体。
 pub fn install_cjk_fonts(ctx: &Context) {
     let embedded: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSC-Regular-subset.ttf");
+    // Noto Sans SC 不含 U+21BB（状态徽章 “↻”），单独内嵌一个 OFL 符号子集做字形回退。
+    let symbols: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMath-Symbols-subset.ttf");
     let mut fonts = FontDefinitions::default();
     fonts
         .font_data
         .insert("cjk_embedded".to_owned(), FontData::from_static(embedded));
+    fonts
+        .font_data
+        .insert("ui_symbols".to_owned(), FontData::from_static(symbols));
     if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
         family.insert(0, "cjk_embedded".to_owned());
+        family.insert(1, "ui_symbols".to_owned());
     }
     if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
         family.push("cjk_embedded".to_owned());
+        family.push("ui_symbols".to_owned());
     }
     ctx.set_fonts(fonts);
 
@@ -744,12 +824,18 @@ pub fn install_cjk_fonts(ctx: &Context) {
             fonts
                 .font_data
                 .insert("cjk_embedded".to_owned(), FontData::from_static(embedded));
+            fonts
+                .font_data
+                .insert("ui_symbols".to_owned(), FontData::from_static(symbols));
             if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
                 family.insert(0, "cjk_system".to_owned());
                 family.insert(1, "cjk_embedded".to_owned());
+                family.insert(2, "ui_symbols".to_owned());
             }
             if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+                family.push("cjk_system".to_owned());
                 family.push("cjk_embedded".to_owned());
+                family.push("ui_symbols".to_owned());
             }
             ctx.set_fonts(fonts);
             return;
@@ -951,7 +1037,7 @@ pub fn kv_row(ui: &mut Ui, p: Palette, label: &str, label_w: f32, value: &str, m
                             .size(FONT_META)
                             .color(p.text_secondary),
                     )
-                    .wrap_mode(egui::TextWrapMode::Extend),
+                    .wrap(),
                 );
             },
         );
@@ -999,7 +1085,7 @@ pub fn render_running_pulse_bar(ui: &mut egui::Ui, active: bool, palette: Palett
         return;
     }
     let width = ui.available_width().max(60.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 3.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 4.0), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
         let time = ui.ctx().input(|i| i.time) as f32;
         let phase = (time * 0.85).fract();
@@ -1052,6 +1138,7 @@ pub fn render_state_badge(
     locale: Locale,
     compact: bool,
 ) {
+    let _ = compact;
     let badge = state_badge(state, theme);
     let localized = badge.label(locale);
     // 注意：不在中文胶囊文本中硬插易变豆腐块的 U+2713，直接由语义色 + 图标/文字表达（仅 State::Ok 为绿）。
@@ -1066,16 +1153,14 @@ pub fn render_state_badge(
         State::SignalStale => "↻ ",
         State::Unsupported => "— ",
     };
-    let text = if compact {
-        format!("{prefix}{localized}")
-    } else {
-        format!("{prefix}{localized} ({})", badge.code)
-    };
+    // 状态码（`OK` / `BLOCKED` 等）属于机器码：默认视图只显示本地化语义，
+    // 技术细节模式才在其它位置单独展示。
+    let text = format!("{prefix}{localized}");
     egui::Frame::none()
         .fill(badge.bg)
         .stroke(Stroke::new(1.0_f32, badge.border.gamma_multiply(0.8)))
         .rounding(Rounding::same(RADIUS_PILL))
-        .inner_margin(Margin::symmetric(SPACE_2, 3.0))
+        .inner_margin(Margin::symmetric(SPACE_2, SPACE_1))
         .show(ui, |ui| {
             ui.add(
                 egui::Label::new(
@@ -1085,12 +1170,11 @@ pub fn render_state_badge(
                         .size(FONT_META),
                 )
                 .wrap_mode(egui::TextWrapMode::Extend),
-            )
-            .on_hover_text(badge.code);
+            );
         });
 }
 
-/// 紧凑胶囊标签（通用状态/标记用，单行不折行）。
+/// 紧凑胶囊标签（通用状态/标记用；优先单行绘制，剩余宽度不足时自动折行，绝不溢出视口）。
 pub fn render_pill(
     ui: &mut egui::Ui,
     text: &str,
@@ -1102,11 +1186,11 @@ pub fn render_pill(
         .fill(bg)
         .stroke(Stroke::new(1.0_f32, border.gamma_multiply(0.75)))
         .rounding(Rounding::same(RADIUS_PILL))
-        .inner_margin(Margin::symmetric(SPACE_2, 2.0))
+        .inner_margin(Margin::symmetric(SPACE_2, SPACE_1))
         .show(ui, |ui| {
             ui.add(
                 egui::Label::new(egui::RichText::new(text).color(fg).strong().size(FONT_META))
-                    .wrap_mode(egui::TextWrapMode::Extend),
+                    .wrap(),
             );
         })
         .response

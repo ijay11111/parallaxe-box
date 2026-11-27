@@ -579,5 +579,62 @@
 - **Noto Sans SC Regular（子集）** — `assets/fonts/NotoSansSC-Regular-subset.ttf`
   - 版权：Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
   - 许可：**SIL Open Font License 1.1**（全文见 `assets/fonts/OFL-NotoSansSC.txt`）。
+  - 来源：Google Fonts 的 Noto Sans SC Regular（`https://fonts.gstatic.com/s/notosanssc/v41/…ttf`，OFL 1.1），
+    用 fontTools `pyftsubset` 按本项目 i18n 文案与 GUI 字符串重新生成子集（约 240 KB，覆盖 1000+ 字形）。
   - 用途：Android / Web 等没有系统 CJK 字体路径的环境内嵌渲染中文界面；桌面端仍优先使用系统字体。
-  - 说明：该文件为项目内已有的 Noto Sans SC 子集（42 KB），非新增网络下载；子集可能不覆盖全部汉字，缺失字形由系统字体回退。
+  - 说明：子集字符集由 `crates/gui/tests/font_coverage.rs` 强制校验——i18n 文案与 GUI 硬编码中文
+    一旦出现字体未覆盖的字符，测试会失败并提示补字。
+- **Noto Sans Math（符号子集）** — `assets/fonts/NotoSansMath-Symbols-subset.ttf`
+  - 版权：Copyright 2022 The Noto Project Authors (https://github.com/notofonts/math)。
+  - 许可：**SIL Open Font License 1.1**（全文见 `assets/fonts/OFL-NotoSansMath.txt`）。
+  - 来源：Google Fonts 的 Noto Sans Math，fontTools 仅保留 `U+21BB`（↻）等极少量符号字形。
+  - 用途：Noto Sans SC 不含 `↻`（状态徽章“规则失效”），作为 egui 字体回退链里的符号补充。
+
+## Android Java 依赖
+
+Android 离线打包合并下列 AAR 和独立 JAR。直接依赖为 GameActivity 和 AppCompat。许可名称取自对应版本的 Maven POM。Guava 的独立 JAR 仅含 `ListenableFuture` 类，其 POM 继承 `guava-parent:26.0-android`，许可见[上游源码声明](https://github.com/google/guava/blob/v26.0/guava/src/com/google/common/util/concurrent/ListenableFuture.java)。Apache 2.0 全文见 [LICENSE-APACHE](LICENSE-APACHE)。
+
+| Maven 坐标 | 格式 | 许可证 |
+|---|---|---|
+| `androidx.activity:activity:1.7.0` | AAR | Apache-2.0 |
+| `androidx.annotation:annotation-experimental:1.4.0` | AAR | Apache-2.0 |
+| `androidx.annotation:annotation:1.3.0` | JAR | Apache-2.0 |
+| `androidx.appcompat:appcompat-resources:1.7.0` | AAR | Apache-2.0 |
+| `androidx.appcompat:appcompat:1.7.0` | AAR | Apache-2.0 |
+| `androidx.arch.core:core-common:2.2.0` | JAR | Apache-2.0 |
+| `androidx.arch.core:core-runtime:2.2.0` | AAR | Apache-2.0 |
+| `androidx.collection:collection:1.0.0` | JAR | Apache-2.0 |
+| `androidx.concurrent:concurrent-futures:1.0.0` | JAR | Apache-2.0 |
+| `androidx.core:core-ktx:1.13.0` | AAR | Apache-2.0 |
+| `androidx.core:core:1.13.0` | AAR | Apache-2.0 |
+| `androidx.cursoradapter:cursoradapter:1.0.0` | AAR | Apache-2.0 |
+| `androidx.customview:customview:1.0.0` | AAR | Apache-2.0 |
+| `androidx.drawerlayout:drawerlayout:1.0.0` | AAR | Apache-2.0 |
+| `androidx.emoji2:emoji2-views-helper:1.2.0` | AAR | Apache-2.0 |
+| `androidx.emoji2:emoji2:1.3.0` | AAR | Apache-2.0 |
+| `androidx.fragment:fragment:1.5.4` | AAR | Apache-2.0 |
+| `androidx.games:games-activity:4.4.0` | AAR | Apache-2.0 |
+| `androidx.interpolator:interpolator:1.0.0` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-common:2.6.1` | JAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-livedata-core:2.5.1` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-livedata:2.0.0` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-process:2.4.1` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-runtime:2.6.1` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-viewmodel-savedstate:2.6.1` | AAR | Apache-2.0 |
+| `androidx.lifecycle:lifecycle-viewmodel:2.6.1` | AAR | Apache-2.0 |
+| `androidx.loader:loader:1.0.0` | AAR | Apache-2.0 |
+| `androidx.profileinstaller:profileinstaller:1.3.1` | AAR | Apache-2.0 |
+| `androidx.resourceinspection:resourceinspection-annotation:1.0.1` | JAR | Apache-2.0 |
+| `androidx.savedstate:savedstate:1.2.1` | AAR | Apache-2.0 |
+| `androidx.startup:startup-runtime:1.0.0` | AAR | Apache-2.0 |
+| `androidx.tracing:tracing:1.0.0` | AAR | Apache-2.0 |
+| `androidx.vectordrawable:vectordrawable-animated:1.1.0` | AAR | Apache-2.0 |
+| `androidx.vectordrawable:vectordrawable:1.1.0` | AAR | Apache-2.0 |
+| `androidx.versionedparcelable:versionedparcelable:1.1.1` | AAR | Apache-2.0 |
+| `androidx.viewpager:viewpager:1.0.0` | AAR | Apache-2.0 |
+| `com.google.guava:listenablefuture:1.0` | JAR | Apache-2.0 |
+| `org.jetbrains.kotlin:kotlin-stdlib-common:1.8.22` | JAR | Apache-2.0 |
+| `org.jetbrains.kotlin:kotlin-stdlib:1.8.22` | JAR | Apache-2.0 |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4` | JAR | Apache-2.0 |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.6.4` | JAR | Apache-2.0 |
+| `org.jetbrains:annotations:13.0` | JAR | Apache-2.0 |

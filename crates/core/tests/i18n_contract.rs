@@ -69,3 +69,67 @@ fn locale_serializes_to_bcp47_tokens() {
     assert_eq!(serde_json::to_string(&Locale::ZhCn).unwrap(), "\"zh-CN\"");
     assert_eq!(serde_json::to_string(&Locale::EnUs).unwrap(), "\"en-US\"");
 }
+
+#[test]
+fn every_translate_call_site_literal_key_exists_in_both_locales() {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let crates_dir = root.join("crates");
+    let mut files = Vec::new();
+    for member in ["core", "cli", "agent", "gui"] {
+        collect_rs_files(&crates_dir.join(member).join("src"), &mut files);
+    }
+    assert!(
+        !files.is_empty(),
+        "expected Rust source files under crates/"
+    );
+
+    let re = regex::Regex::new(r#"translate\s*\([^,]+,\s*"([a-z0-9_.-]+)"\s*,"#).unwrap();
+    let mut discovered = BTreeSet::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).unwrap();
+        // Exclude inline #[cfg(test)] blocks where intentionally missing keys are probed.
+        let prod_text = text.split("#[cfg(test)]").next().unwrap_or(&text);
+        for cap in re.captures_iter(prod_text) {
+            if let Some(m) = cap.get(1) {
+                discovered.insert((m.as_str().to_string(), path.display().to_string()));
+            }
+        }
+    }
+    assert!(
+        discovered.len() >= 100,
+        "expected >= 100 translate() literal call sites, found {}",
+        discovered.len()
+    );
+
+    let mut missing = Vec::new();
+    for (key, file) in discovered {
+        if !has_key(Locale::ZhCn, &key) {
+            missing.push(format!("zh-CN missing '{key}' (referenced in {file})"));
+        }
+        if !has_key(Locale::EnUs, &key) {
+            missing.push(format!("en-US missing '{key}' (referenced in {file})"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "i18n coverage gaps detected:\n{}",
+        missing.join("\n")
+    );
+}

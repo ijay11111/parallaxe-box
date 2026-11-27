@@ -125,6 +125,7 @@ fn fixture_result(
         request_sent: case.sample.status.is_some(),
     }];
     let outcome = crate::probe::FetchOutcome {
+        destination: Default::default(),
         status: case.sample.status,
         content_type: case.sample.content_type.clone(),
         location: case.sample.location.clone(),
@@ -284,6 +285,7 @@ fn enabled_stale_check(registry: &Registry) -> SelftestCase {
             false,
         );
         let outcome = crate::probe::FetchOutcome {
+            destination: Default::default(),
             status: Some(200),
             content_type: Some("text/html".to_string()),
             location: None,
@@ -378,6 +380,7 @@ fn truncated_no_stale_check(registry: &Registry) -> SelftestCase {
 
 fn synthetic_result(target: &str, state: State) -> ResultRecord {
     ResultRecord {
+        destination: Default::default(),
         target: target.to_string(),
         state,
         reason: None,
@@ -665,6 +668,64 @@ async fn admission_check(registry: &Registry) -> Vec<SelftestCase> {
         run_id: Some("run-selftest-admission".to_string()),
         ..Default::default()
     };
+    if registry.distribution_mode() {
+        let now = crate::state::format_time(time::OffsetDateTime::now_utc());
+        let selected = registry.select(Some("google-all"), &[], &[], false);
+        let plan = runtime::network_plan(registry, &options);
+        let admitted = selected
+            .as_ref()
+            .map(|selection| {
+                selection
+                    .ids
+                    .iter()
+                    .filter(|id| {
+                        registry
+                            .get(id)
+                            .is_some_and(|target| registry.admission(target, false, &now).admitted)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let control_admitted = registry
+            .entries()
+            .iter()
+            .filter(|target| target.id().starts_with("control."))
+            .filter(|target| registry.admission(target, false, &now).admitted)
+            .count();
+        let plan_ok = plan
+            .as_ref()
+            .map(|plan| plan.target_count == 107 && plan.zero_packet)
+            .unwrap_or(false);
+        return vec![
+            if selected
+                .as_ref()
+                .is_ok_and(|selection| selection.ids.len() == 107)
+                && admitted == 107
+                && control_admitted == 0
+            {
+                SelftestCase::pass(
+                    "admission:distribution-google",
+                    "发行包模式 Google 107 项获准、control 目标仍零发包",
+                )
+            } else {
+                SelftestCase::fail(
+                    "admission:distribution-google",
+                    format!("selected/admitted={admitted}/107 control_admitted={control_admitted}"),
+                )
+            },
+            if plan_ok {
+                SelftestCase::pass(
+                    "admission:distribution-plan-offline",
+                    "发行包风险预览选中 107、zero_packet=true",
+                )
+            } else {
+                SelftestCase::fail(
+                    "admission:distribution-plan-offline",
+                    format!("计划校验失败：{plan:?}"),
+                )
+            },
+        ];
+    }
     match runtime::run_check(registry, &options, None, false, None).await {
         Ok(output) => {
             let selected_ok = output.report.coverage.selected_count == 107;

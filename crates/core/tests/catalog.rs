@@ -74,12 +74,9 @@ fn adminission_is_denied_for_all_without_grants() {
 fn selection_sizes_match_profiles() {
     let registry = registry();
     let cases = [
-        ("simple", 15),
+        ("simple", 16),
         ("google-all", 107),
         ("full", 135),
-        ("business", 35),
-        ("study", 6),
-        ("media", 22),
     ];
     for (profile, expected) in cases {
         let selection = registry
@@ -113,8 +110,8 @@ fn selection_errors_are_usage_errors() {
 fn signal_rules_bind_both_ways_and_negative_is_unreferenced() {
     let registry = registry();
     let rules = registry.rules();
-    assert_eq!(rules.len(), 12);
-    assert_eq!(rules.iter().filter(|rule| rule.enabled).count(), 11);
+    assert_eq!(rules.len(), 15);
+    assert_eq!(rules.iter().filter(|rule| rule.enabled).count(), 14);
     let legacy = registry.rule("rule.legacy-region").expect("negative rule");
     assert!(!legacy.enabled);
     assert!(registry.entries().iter().all(|entry| !entry
@@ -153,7 +150,7 @@ source_type = "DIRECT_ANONYMOUS_OBSERVATION"
 verified_at = 2026-11-21
 [admission]
 grants = [
-  { target_id = "google.home", method = "GET", exact_url = "https://www.google.com/", surface = "x", purpose = "x", policy_ref = "x", reviewed_by = "x", reviewed_at = 2026-01-01, valid_until = 2030-01-01 }
+  { target_id = "google.home", method = "GET", exact_url = "https://support.google.com/websearch/", surface = "x", purpose = "x", policy_ref = "x", reviewed_by = "x", reviewed_at = 2026-01-01, valid_until = 2030-01-01 }
 ]
 "#,
     )

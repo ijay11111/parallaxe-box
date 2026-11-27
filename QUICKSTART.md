@@ -16,6 +16,9 @@ cargo build --release -p parallaxe-cli
 
 # 方式 B：构建纯无头单文件（不编译 egui/eframe 与图形栈，适合服务器 / CI）
 cargo build --release -p parallaxe-cli --no-default-features
+
+# 正式发行包：显式启用编译期分发标记（源码日常构建保持默认零发包）
+cargo build --release -p parallaxe-cli --features distribution-release
 ```
 
 开发期也可直接用 `cargo run -p parallaxe-cli -- <子命令>` 运行；下文示例均以已编译的 `parallaxe` 命令书写。
@@ -66,7 +69,7 @@ parallaxe check --headless --profile google-all --json
 **这不是程序坏了，而是刻意设计的安全闸门。**  
 按照合规与目标方逐址准入原则（见 [docs/compliance.md](docs/compliance.md)），内置 `assets/targets.toml` 中的 `admission.grants` 默认为空，且所有目标的 `allow_online = false`。软件绝不会在未经逐址核准的情况下对 107 个第三方站点悄悄发起自动探测。
 
-### 用 8 个内置脱敏 Fixture 体验完整判定引擎
+### 用 9 个内置脱敏 Fixture 体验完整判定引擎
 
 无需联网即可通过 `--fixture <CASE>` 在合成脱敏样本上走完「信号提取 → 分桶投票 → 9-State 判定 → 退出码归约」全流程：
 
@@ -102,6 +105,25 @@ parallaxe check --headless --fixture gemini-positive --html > report.html
 # 导出防公式注入 CSV 报告
 parallaxe check --headless --fixture news-edition --csv > report.csv
 ```
+
+### 代理模式与最大时长
+
+```bash
+# 默认 auto：探测环境变量、Windows 系统代理与常见本机端口（7890/7897/10809/…），按目标选可达路径
+parallaxe check --headless --profile simple --json
+
+# 强制直连 / 显式 HTTP 代理（无凭据）/ PAC 网址
+parallaxe check --headless --profile simple --proxy-mode none --json
+parallaxe check --headless --profile simple --proxy-mode http --proxy http://127.0.0.1:7890
+parallaxe check --headless --profile simple --proxy-mode pac --pac-url http://127.0.0.1:9090/proxy.pac
+
+# SOCKS：当前构建不支持传输，会明确拒绝（不会静默直连）
+# 最大检测时长：0 = 不限时（simple 默认）；也可 30000 / 60000 / 120000（上限）
+parallaxe check --headless --profile simple --timeout 60000
+```
+
+自动模式只做有界 TCP 探测（端口连通 + `CONNECT` 握手），不发送目标 HTTP 请求、不扫网段、不改系统代理/路由/DNS；探测摘要写入 `path.reason`，`path.proxy_mode` 记录 `DIRECT_SELECTED` / `PROXY_SELECTED` / `HTTP` / `PAC`。
+
 
 ---
 
@@ -139,6 +161,16 @@ parallaxe isolate explain --target google.books --json
 parallaxe link explain --fixture gemini-positive
 parallaxe link explain --profile simple --json
 
+# 手动导出规则（必须显式 --out-dir；不写任何默认目录）
+# 说明：源码构建内置目录默认零发包，没有结果时会被安全闸门拒绝（EXPORT_CLOSURE_INCOMPLETE，退出码 3）；
+#       实际导出请配合已有报告：--source-report check-report.json。
+parallaxe guard export --target google.gemini --format clash --out-dir ./my-rules
+parallaxe guard export --source-report ./check-report.json --target google.gemini \
+  --format clash --out-dir ./my-rules
+
+# 测试版：系统级阻断不开放，--apply 会返回 SYSBLOCK_BETA_DISABLED
+parallaxe guard block --target google.gemini --apply --confirm
+
 # 如需显式执行一次受控系统 DNS 解析（仅允许内置目录主机，禁止与 --fixture 同用）
 # parallaxe link explain --target google.home --resolve --json
 ```
@@ -155,12 +187,37 @@ GUI 采用原生 `egui/eframe` 窗口，**仅在本机运行，不开启任何�
 - 浏览按服务家族分组的 Google 107 项 + 对照 28 项完整目录树；
 - 一键演练离线脱敏案例，逐项展开 `transport / service_observed / risk_signal / local_policy` 四层证据与冲突原因；
 - 在顶部切换明/暗主题与正常/极简密度（切换视图绝不改变判定结果，也不隐藏冲突与 `UNKNOWN`）；
-- 在「处置中心」查看 Guard 影响闭包审计与链路体检四列视图；
+- 在「处置中心」查看 Guard 影响闭包审计与链路体检四列视图；**测试版不含系统级阻断**，该入口隐藏，只保留只读预览与规则手工导出（必须通过系统目录选择器选定导出目录，取消即零写入）；
+- 在「设置」中切换主题/密度/语言（即时生效并持久化到本地设置文件），并管理本地插件的启用状态；
 - 在「自定义导入」页面导入自有或获授权的自定义检查网址与 9 类白名单检查方式（须阅读并主动勾选两段责任声明，运行前经一次性模态弹窗确认后方可对该次会话发包；详见 [docs/user-import.md](docs/user-import.md)）。
 
 ---
 
-## 6. 第五步：接入 Agent（`--stdio` NDJSON）
+## 6. 第五步（可选）：本地插件
+
+插件是**纯本地声明式 manifest**，不执行脚本、不联网、默认零权限。示例插件位于 `plugins/samples/`：
+
+```bash
+# 校验目录并取得 sha256
+parallaxe plugin verify plugins/samples/light-report-badge
+
+# 显式审批后启用（sha256 必须与 verify 输出一致；设置文件由 --settings 显式指定）
+parallaxe plugin enable plugins/samples/light-report-badge \
+  --settings ./parallaxe-settings.json \
+  --approve-sha256 <sha256>
+
+# 查看、禁用与修复半条设置记录
+parallaxe plugin list --settings ./parallaxe-settings.json --detailed
+parallaxe plugin disable sample.light.report-badge --settings ./parallaxe-settings.json
+parallaxe plugin repair --settings ./parallaxe-settings.json
+```
+
+启用后 GUI 插件独立页会渲染徽标或只读页面；Android 构建不包含插件入口（零插件面）。
+协议细节与打包方式见 [docs/plugin-protocol.md](docs/plugin-protocol.md)。
+
+---
+
+## 7. 第六步：接入 Agent（`--stdio` NDJSON）
 
 无需网络端口，适合自动化脚本或编码 Agent 通过标准输入输出调用：
 
@@ -176,11 +233,26 @@ parallaxe agent --stdio
 {"schema":"parallaxe.agent/v1","id":"req-3","op":"selftest","args":{}}
 ```
 
-完整 9 种 `op` 说明与流式取消示例请参阅 [docs/agent-interface.md](docs/agent-interface.md)。
+完整 13 种 `op` 说明、AI 授权桥（A 一次性确认 / B 自主检测）与流式取消示例请参阅 [docs/agent-interface.md](docs/agent-interface.md)。
+
+AI 启动检测的典型用法（需先打开桌面 GUI；未确认前保持零发包）：
+
+```json
+{"schema":"parallaxe.agent/v1","id":"ai-1","op":"ai_status","args":{}}
+{"schema":"parallaxe.agent/v1","id":"ai-2","op":"ai_request_check","args":{"targets":["user.example-home"],"purpose":"用户确认后观测首跳"}}
+{"schema":"parallaxe.agent/v1","id":"ai-3","op":"ai_request_status","args":{"request_id":"ai-req-...","wait_ms":30000}}
+```
+
+用户也可用只读命令查看授权桥状态（不代替用户确认，也不打开自主检测）：
+
+```bash
+parallaxe ai status
+parallaxe ai status --json
+```
 
 ---
 
-## 7. 退出码速查（ADR-003）
+## 8. 退出码速查（ADR-003）
 
 | 退出码 | 含义 | 典型场景 |
 |---:|---|---|
@@ -191,7 +263,7 @@ parallaxe agent --stdio
 
 ---
 
-## 8. 使用外部覆盖层（只收紧、不提权）
+## 9. 使用外部覆盖层（只收紧、不提权）
 
 单文件二进制无需外部目录即可运行；如你需要扩展只读目录或收紧 Profile 预算，可显式传入全局参数：
 

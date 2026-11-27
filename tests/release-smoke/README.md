@@ -4,7 +4,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `release_smoke.py` | 断言 `google-all=107/0/3`、`selftest=28/0`、parity 10/10、导入零发包、无头构建 |
+| `release_smoke.py` | 源码断言 `google-all=107/0/3`；发行包断言编译标记 + `--plan google-all=107/zero_packet=true`；`selftest=28/0`、parity 10/10、导入零发包、无头构建 |
 | `ui_audit.py` | 量化 UI：WCAG 对比度、明暗结构 IoU、卡片宽度/间距、硬编码颜色与状态兜底提示 |
 | `latest/` | 最近一次运行的日志、`summary.json`、`summary.md`、`ui-audit.md`（生成物，不入库） |
 
@@ -25,12 +25,16 @@ python tests/release-smoke/release_smoke.py --no-build
 # 平台构建任务：只跑二进制基线，不跑 cargo 测试
 python tests/release-smoke/release_smoke.py --bin target/<triple>/release/parallaxe --no-build --no-cargo-tests
 
+# 正式发行产物：要求 distribution-release 编译期标记，并改用零发包 --plan
+python tests/release-smoke/release_smoke.py --bin target/<triple>/release/parallaxe --no-build --no-cargo-tests --require-distribution-release
+
 # UI 检验升级为阻塞（任一硬指标失败返回 1）
 python tests/release-smoke/ui_audit.py --strict
 ```
 
 ## 口径说明
 
-- `coverage.uncovered` 同时包含未选中的 28 个对照目标（`NOT_SELECTED`），因此断言「已选未覆盖 = 107」与「未覆盖两栏合计 = 135」，不要把总量直接和 107 比较。
+- `coverage.uncovered` 同时包含未选中的 28 个对照目标（`NOT_SELECTED`），因此源码断言「已选未覆盖 = 107」与「未覆盖两栏合计 = 135」，不要把总量直接和 107 比较。
+- 发行包二进制会放行内置 Google 107 项，离线 CI 不得直接运行在线 `check google-all`；脚本自动识别 `build-info`，只执行 `--plan`。标记解析失败时 fail-closed 跳过运行，避免误触真实网络。
 - `ui_audit.py` 默认是**报告型**：浅色主题对比度等视觉取舍不会阻塞构建；需要门禁时加 `--strict`。
 - 截图结构检验使用本地素材 `tests/release-smoke/latest/screenshots/`（由 `tools/capture_gui.py` 生成，`.gitignore` 排除、不随源码发布）；缺失时该项标记 SKIP，不影响构建。

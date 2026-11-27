@@ -1,7 +1,7 @@
 # 进阶：用户自主阻断（Android / iOS 系统层）
 
 > 这是**第三备选**，仅供进阶用户自行操作。本软件界面不显示此选项，也**不代为执行**任何系统级配置。
-> 适用人群：愿意自行在设备网络设置中配置 DNS/过滤器的用户。普通用户请使用主方案（规则导入 / Win-Linux 系统阻断）。
+> 适用人群：愿意自行在设备网络设置中配置 DNS/过滤器的用户。普通用户请使用主方案（规则导入）。
 
 ## 前提与边界
 - 本软件只做**只读诊断 + 规则/域名清单导出**；以下操作全部由你在自己的设备上完成。
@@ -12,13 +12,13 @@
 **方式 A：私人 DNS（Private DNS / DNS over TLS）**
 1. 设置 → 网络和互联网 → 私人 DNS（不同品牌路径略有差异）。
 2. 选"指定私人 DNS 提供商主机名"，填入你信任的过滤 DNS 服务 hostname（如你自建或第三方提供的 DoT 地址）。
-3. 在对应 DNS 服务的控制台导入本软件导出的 `domainlist`（`guard export --format domainlist --out <dir>`）。
+3. 在对应 DNS 服务的控制台导入本软件导出的 `domainlist`（`guard export --format domainlist --out-dir <dir>`）。
 4. 保存后验证：访问一个被列入清单的域名，应无法加载；访问其他网站正常。
 - 注意：私人 DNS 按域名过滤，**不影响 IP 直连**；部分 App 使用自有 DoH 会绕过。
 - 不占用 Android 的单一 VPN 槽位，可与你在用的代理共存。
 
 **方式 B：在你已有的代理客户端里导入规则**
-- 使用 `guard export --format clash|singbox --mode provider` 导出的文件，按 `docs/cross-platform.md` 的 Merge/Script 说明导入。
+- 使用 `guard export --format clash|singbox --mode provider --out-dir <dir>` 导出的文件，按 `docs/cross-platform.md` 的 Merge/Script 说明导入。
 - 本软件不建 VpnService、不申请 VPN 权限。
 
 ## iOS
@@ -31,7 +31,7 @@
 
 ## 导出清单从这里来
 ```bash
-parallaxe guard export --target <id> --format domainlist --out ./export
+parallaxe guard export --target <id> --format domainlist --out-dir ./export
 ```
 导出清单仅含 FQDN 域名，不含 IP / ASN / Cookie / 账号信息，默认脱敏。
 

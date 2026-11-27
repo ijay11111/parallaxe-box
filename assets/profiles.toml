@@ -8,7 +8,7 @@ extra_attempts_per_target = 1
 max_redirects = 0
 max_body_bytes = 16777216
 v6_fallback_after_ms = 8000
-min_interval_ms = 3500
+min_interval_ms = 4000
 batch_size = 5
 udp_quic_concurrency = 1
 tcp_concurrency = 3
@@ -17,8 +17,10 @@ node_retest = 1
 
 [[profiles]]
 id = "simple"
-ids = ["google.home", "google.gemini", "google.youtube", "google.play", "google.gmail", "google.accounts", "google.news", "google.drive", "google.books", "control.chatgpt", "control.claude", "control.netflix", "control.rail12306", "control.taobao", "control.bilibili"]
-run_timeout_ms = 20000
+# 默认不限时：总时长只受单请求 request_timeout_ms 与 QoS 节奏约束。
+# 用户可用 --timeout / GUI「最大检测时长」显式设上限（0 = 不限时）。
+ids = ["google.home", "google.gemini", "google.youtube", "google.play", "google.gmail", "google.accounts", "google.news", "google.drive", "google.books", "google.one", "control.chatgpt", "control.claude", "control.netflix", "control.rail12306", "control.taobao", "control.bilibili"]
+run_timeout_ms = 0
 request_timeout_ms = 10000
 max_concurrency = 4
 per_host = 2
@@ -38,27 +40,3 @@ run_timeout_ms = 120000
 request_timeout_ms = 12000
 max_concurrency = 6
 per_host = 2
-
-[[profiles]]
-id = "business"
-groups = ["google.workspace", "google.identity", "google.cloud", "control.developer"]
-run_timeout_ms = 60000
-request_timeout_ms = 10000
-max_concurrency = 4
-per_host = 1
-
-[[profiles]]
-id = "study"
-ids = ["google.books", "google.scholar", "google.notebook", "google.classroom", "google.colab", "google.edu-meet"]
-run_timeout_ms = 30000
-request_timeout_ms = 10000
-max_concurrency = 3
-per_host = 1
-
-[[profiles]]
-id = "media"
-groups = ["google.media", "google.store", "control.media"]
-run_timeout_ms = 45000
-request_timeout_ms = 10000
-max_concurrency = 4
-per_host = 1

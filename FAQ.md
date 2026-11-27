@@ -71,11 +71,11 @@ Google 并没有一个全站统一的「出口国家」。不同产品依据不�
 
 ## 7. 为什么没有 `--apply`？软件会修改我的 hosts、防火墙或 Clash/Mihomo 配置吗？
 
-**不会。当前版本 Guard 为纯只读预览，零写盘能力。**
+**测试版不含系统级阻断。** Guard 预览不会修改 hosts 或系统防火墙。
 - 所有 Guard 计划恒为 `operation = "PREVIEW"`、`applied = false`、`rules_written = 0`。
 - `parallaxe guard rollback` 恒输出 `NOTHING_APPLIED`（无可回滚改动）。
 - 关于 hosts、Windows 防火墙和 loopback API，阶段 4 已完成独立的写操作生命周期安全评估（10 条门控 G0–G9，见 [docs/guard.md](docs/guard.md)），结论是**当前版本全部不开放**。
-- 即便未来某个版本经裁决允许导出规则片段，规则生成、导出、导入与生效也严格分离，且必须由用户显式确认并支持原子回滚。
+- 手动导出只写规则文件，CLI 必须用 `--out-dir <目录>` 指定位置。若其他检查通过且只有 `NO_SAFE_BLOCK`，文件仍可导出，结果含 `EXPORT_WARNING_NO_SAFE_BLOCK`、`applied=false`。是否导入由用户自行决定。
 
 ---
 
@@ -128,3 +128,23 @@ Google 并没有一个全站统一的「出口国家」。不同产品依据不�
 
 - 若某条公开规则因目标站点改版失效，请在 Issue 中提供脱敏后的规则 ID、表面说明与复现条件（**请勿粘贴含 Cookie、Authorization 头、真实公网 IP 或个人账号信息的原始报文或 HAR 文件**）。
 - 若涉及目标条款、商标或权利投诉，请在仓库公开渠道或联系维护人提出，维护人核实后将按 [docs/compliance.md](docs/compliance.md) 及时修正、降级或下架相关登记条目。
+
+---
+
+## 14. 测试版在 Web 和 Android 上能做什么？有什么没测？
+
+- **Web（WASM）**：可浏览完整目录、运行离线 Fixture 演练、导出 MD/TXT 报告，并可在浏览器内切换明暗主题与语言。浏览器构建**不做真实联网探测**（跨域与 CORS 限制，且会绕过桌面端的目标准入与预算控制），因此报告会带 `SCOPE_WASM_OFFLINE` 机器码。
+- **Android（x86_64 / arm64-v8a）**：可浏览目录、运行离线演练、导出报告；报告 scope 标注 `ANDROID_SIMULATED_USER`，表示"模拟器/模拟用户环境下的离线观测"，**不是**系统级网络证据。APK 仅申请 `INTERNET`，无 VPN/root/存储/账号权限，也不加载插件。
+- **已实测**：MuMu 12（Android 15）上的双 ABI 安装、启动、权限与横竖屏布局，以及桌面/CLI 全量测试。
+- **未实测**：真实 ARM 物理手机、Android 12 及以下、中文软键盘输入、真实运营商 QoS/UDP 限速。
+
+---
+
+## 15. 插件安全吗？会不会执行第三方代码？
+
+**不会执行脚本。** 测试版的插件是**纯本地声明式 manifest**（`parallaxe.plugin/v1`）：
+- 只能声明页面组件（标题、徽标、提示、Markdown、代码、进度、表格、表单、按钮）与一个只读权限 `report_counts`，由宿主渲染；
+- 默认零权限、零发包，不读取报告正文以外的数据，也不能访问网络或文件系统；
+- 启用必须显式审批 manifest 的 sha256（`parallaxe plugin enable --approve-sha256`），内容变化会被拒绝；
+- 随仓库只附带两个**第一方**示例插件（一轻一重），逐项登记在 [THIRD_PARTY_PLUGINS.md](THIRD_PARTY_PLUGINS.md)，由 CI 与 `cargo test` 双重校验；
+- 重插件里的表单/按钮在本版只渲染为**禁用态描述**，不产生动作。

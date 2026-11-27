@@ -42,6 +42,12 @@ async fn report_matches_schema_field_sets() {
         "version",
         "wall_duration_ms",
     ];
+    let mut expected_top = expected_top.to_vec();
+    if cfg!(target_os = "android") {
+        expected_top.push("scope");
+        expected_top.sort_unstable();
+        assert_eq!(report["scope"], "ANDROID_SIMULATED_USER");
+    }
     assert_eq!(top, expected_top);
     assert_eq!(report["schema"], "parallaxe.report/v1");
     assert_eq!(report["tool"], "parallaxe-box");
@@ -52,6 +58,7 @@ async fn report_matches_schema_field_sets() {
 
     let result = &report["results"][0];
     let required = [
+        "destination",
         "target",
         "state",
         "reason",
@@ -189,6 +196,7 @@ fn csv_is_formula_safe_and_html_is_offline() {
     let mut report = Report::new("0.1.0", "2026-11-21T00:00:00Z", "run-format", Mode::Online);
     report.exit_code = 0;
     let mut record = parallaxe_core::contracts::ResultRecord {
+        destination: Default::default(),
         target: "=cmd|<script>alert(1)</script>".to_string(),
         state: State::ReachableOnly,
         reason: Some("NO_REGION_SIGNAL".to_string()),

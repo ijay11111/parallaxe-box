@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 仅声明 INTERNET 权限：无 root、无 BIND_VPN_SERVICE、无存储/账号/定位权限。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Activity 必须与 cdylib 的 native 入口匹配：
+      crates/gui 使用 android-activity/game-activity，libparallaxe_gui.so 导出的是
+      Java_com_google_androidgamesdk_GameActivity_initializeNativeCode（没有
+      ANativeActivity_onCreate），所以这里必须声明 androidx GameActivity，
+      而不是 android.app.NativeActivity。
+
+      GameActivity 继承 androidx.appcompat.app.AppCompatActivity，需要
+      androidx.games:games-activity:4.4.0 + AppCompat 资源与主题。
+    -->
+    <application
+        android:allowBackup="false"
+        android:hasCode="true"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Parallaxe box">
+        <activity
+            android:name="com.google.androidgamesdk.GameActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="parallaxe_gui" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

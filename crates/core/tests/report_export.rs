@@ -22,6 +22,7 @@ fn sample_report() -> Report {
         reason: "NO_REGION_SIGNAL".to_string(),
     });
     let mut record = ResultRecord {
+        destination: Default::default(),
         target: "google.gemini|pipe\nnewline".to_string(),
         state: parallaxe_core::State::Unknown,
         reason: None,

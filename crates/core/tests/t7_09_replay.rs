@@ -16,6 +16,7 @@ use parallaxe_core::forensics::{
 
 fn result(target: &str, state: State) -> ResultRecord {
     ResultRecord {
+        destination: Default::default(),
         target: target.to_string(),
         state,
         reason: None,

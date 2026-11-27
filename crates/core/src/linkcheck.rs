@@ -22,6 +22,7 @@ pub struct LinkRow {
     pub host: String,
     pub resolver: LinkResolverCell,
     pub connection_edge: LinkConnectionCell,
+    pub destination: crate::destination::Destination,
     pub http_egress: LinkEgressCell,
     pub address_family: LinkFamilyCell,
 }
@@ -43,7 +44,7 @@ pub struct LinkConnectionCell {
     pub status: String,
     pub observed_family: Option<String>,
     pub attempts: Vec<LinkAttemptCell>,
-    /// 当前传输层不暴露对端地址；未知就保持 null。
+    /// 显式显示时输出本次 socket 对端，缺失或脱敏时为 null。
     pub peer_address: Option<String>,
     pub reason: Option<String>,
 }
@@ -162,6 +163,7 @@ fn empty_row(registry: &Registry, id: &str, reason: &str) -> LinkRow {
             .unwrap_or_default(),
         resolver: empty_resolver(),
         connection_edge: empty_connection(),
+        destination: Default::default(),
         http_egress: empty_egress(reason),
         address_family: empty_family(),
     }
@@ -189,14 +191,16 @@ fn attempt_cell(attempt: &Attempt) -> LinkAttemptCell {
     }
 }
 
-fn row_from_result(registry: &Registry, result: &ResultRecord) -> LinkRow {
+fn row_from_result(registry: &Registry, result: &ResultRecord, show_ip: bool) -> LinkRow {
+    let mut destination = result.destination.clone();
+    destination.set_show_ip(show_ip);
     let host = registry
         .get(&result.target)
         .map(|target| target.host())
         .unwrap_or_default();
     let attempts: Vec<LinkAttemptCell> =
         result.transport.attempts.iter().map(attempt_cell).collect();
-    let connection_edge = if attempts.is_empty() {
+    let connection_edge = if attempts.is_empty() && !destination.peer_observed {
         empty_connection()
     } else {
         let observed_family = result.path.observed_family.map(|family| match family {
@@ -207,8 +211,8 @@ fn row_from_result(registry: &Registry, result: &ResultRecord) -> LinkRow {
             status: "OBSERVED".to_string(),
             observed_family,
             attempts,
-            peer_address: None,
-            reason: None,
+            peer_address: destination.peer_address.map(|ip| ip.to_string()),
+            reason: (!destination.peer_observed).then(|| "PEER_NOT_OBSERVED".into()),
         }
     };
 
@@ -274,7 +278,24 @@ fn row_from_result(registry: &Registry, result: &ResultRecord) -> LinkRow {
     LinkRow {
         target: result.target.clone(),
         host,
-        resolver: empty_resolver(),
+        resolver: if destination.resolved_count == 0 {
+            empty_resolver()
+        } else {
+            LinkResolverCell {
+                status: "RESOLVED".into(),
+                v4: destination
+                    .resolved_count
+                    .saturating_sub(destination.resolved_v6) as u64,
+                v6: destination.resolved_v6 as u64,
+                addresses: destination
+                    .resolved_addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                reason: None,
+            }
+        },
+        destination,
         connection_edge,
         http_egress,
         address_family: family,
@@ -283,10 +304,19 @@ fn row_from_result(registry: &Registry, result: &ResultRecord) -> LinkRow {
 
 /// 从一次已完成运行投影链路体检；不发起任何请求。
 pub fn analyze(registry: &Registry, report: &Report, generated_at: String) -> LinkReport {
+    analyze_with_ip(registry, report, generated_at, false)
+}
+
+pub fn analyze_with_ip(
+    registry: &Registry,
+    report: &Report,
+    generated_at: String,
+    show_ip: bool,
+) -> LinkReport {
     let mut rows = BTreeMap::new();
     for result in &report.results {
         rows.entry(&result.target)
-            .or_insert_with(|| row_from_result(registry, result));
+            .or_insert_with(|| row_from_result(registry, result, show_ip));
     }
     for item in report
         .coverage

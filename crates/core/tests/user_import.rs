@@ -39,6 +39,7 @@ impl Transport for CountingMockTransport {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             FetchOutcome {
+                destination: Default::default(),
                 status: Some(200),
                 content_type: Some("text/plain; charset=utf-8".to_string()),
                 location: None,
@@ -96,6 +97,7 @@ fn consent_gate_blocks_target_and_rule_import_when_unchecked() {
                 surface: Some("测试表面".to_string()),
                 signals: vec!["rule.trace".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             false,
         )
@@ -151,6 +153,7 @@ fn url_validation_and_batch_import_enforce_security_boundaries() {
                 surface: None,
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         );
@@ -166,6 +169,7 @@ fn url_validation_and_batch_import_enforce_security_boundaries() {
                 surface: Some("明文测试".to_string()),
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: true,
+                user_group: None,
             },
             true,
         )
@@ -184,6 +188,7 @@ fn url_validation_and_batch_import_enforce_security_boundaries() {
                 surface: None,
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )
@@ -196,6 +201,7 @@ fn url_validation_and_batch_import_enforce_security_boundaries() {
                 surface: None,
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )
@@ -204,10 +210,11 @@ fn url_validation_and_batch_import_enforce_security_boundaries() {
         .import_user_target(
             UserTargetImportInput {
                 id: Some("user.dup-url".to_string()),
-                url: "https://www.google.com/".to_string(),
+                url: "https://support.google.com/gemini/".to_string(),
                 surface: None,
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )
@@ -404,6 +411,7 @@ async fn unauthorized_zero_packets_one_time_grant_revocation_and_audit_trail() {
                 surface: Some("用户自选 Trace 端点".to_string()),
                 signals: vec!["rule.user-custom-kv".to_string(), "rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )

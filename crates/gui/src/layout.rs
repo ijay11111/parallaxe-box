@@ -44,6 +44,35 @@ pub enum OverviewVariant {
     MobileMinimalStacked,
 }
 
+/// 三端安全区留白（Android 状态栏/手势条；桌面与 Web 默认为 0）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SafeAreaInsets {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+impl SafeAreaInsets {
+    pub fn for_platform() -> Self {
+        if cfg!(target_os = "android") {
+            SafeAreaInsets {
+                top: 28.0,
+                bottom: 20.0,
+                left: 0.0,
+                right: 0.0,
+            }
+        } else {
+            SafeAreaInsets {
+                top: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 0.0,
+            }
+        }
+    }
+}
+
 /// 纯函数式布局规格（不依赖 `ThemeMode`，从结构上确保明暗切换不改变布局）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutSpec {
@@ -68,19 +97,52 @@ pub struct LayoutSpec {
     pub bottom_split_columns: usize,
     /// 侧抽屉目标宽度（随窗口宽度弹性缩放，永不挤占主区）。
     pub drawer_width: f32,
+    /// 是否运行在移动平台（Android）。为 true 时无论横竖屏都使用移动布局族，
+    /// 不会因为横屏宽度 >= 840px 被误判成桌面 Compact/Wide。
+    pub mobile_layout: bool,
+    /// 移动端 / 窄屏触控友好标志（启用 >= 44dp 最小触控高度与键盘避让）。
+    pub touch_friendly: bool,
+    /// 交互控件最小高度（窄屏/Android >= 44.0dp，桌面 32.0px）。
+    pub min_touch_height: f32,
+    /// 当前平台安全区留白。
+    pub safe_area: SafeAreaInsets,
 }
 
 impl LayoutSpec {
-    /// 由信息密度与可用宽度计算正交布局规格。
+    /// 桌面/Web 入口：只按宽度分档（保持既有行为）。
     pub fn compute(density: DensityMode, width: f32) -> Self {
-        let tier = ViewportTier::from_width(width);
+        Self::compute_for_platform(density, width, false)
+    }
+
+    /// 平台感知入口：移动平台（Android）强制移动布局族，横屏不会被当成桌面 dashboard。
+    pub fn compute_for_platform(
+        density: DensityMode,
+        width: f32,
+        is_mobile_platform: bool,
+    ) -> Self {
+        let width_tier = ViewportTier::from_width(width);
+        // 移动平台横屏可能 >= 840px：仍固定 Narrow 档，让下游视图选择、字体层级、
+        // 底部导航与返回键行为都走移动端分支。
+        let tier = if is_mobile_platform {
+            ViewportTier::Narrow
+        } else {
+            width_tier
+        };
         let overview_variant = match (density, tier) {
             (DensityMode::Normal, ViewportTier::Narrow) => OverviewVariant::MobileNormalStacked,
             (DensityMode::Normal, _) => OverviewVariant::DesktopNormalDashboard,
             (DensityMode::Minimal, ViewportTier::Narrow) => OverviewVariant::MobileMinimalStacked,
             (DensityMode::Minimal, _) => OverviewVariant::DesktopMinimalThreeCards,
         };
-        let summary_columns = if width >= 1040.0 {
+        // 移动端横屏 >= 640px 允许两列，避免单列过稀；任何情况都不超过 2 列。
+        let mobile_two_columns = is_mobile_platform && width >= 640.0;
+        let summary_columns = if is_mobile_platform {
+            if mobile_two_columns {
+                2
+            } else {
+                1
+            }
+        } else if width >= 1040.0 {
             6
         } else if width >= 640.0 {
             3
@@ -88,19 +150,54 @@ impl LayoutSpec {
             2
         };
         let is_narrow = tier == ViewportTier::Narrow;
+        let touch_friendly = is_narrow || is_mobile_platform;
         LayoutSpec {
             tier,
             density,
             overview_variant,
-            show_desktop_tabs: !is_narrow && density == DensityMode::Normal,
-            show_bottom_nav: is_narrow,
-            show_desktop_status_bar: !is_narrow,
-            show_top_subtitle: width >= 1080.0,
+            show_desktop_tabs: !is_mobile_platform && !is_narrow && density == DensityMode::Normal,
+            show_bottom_nav: is_mobile_platform || is_narrow,
+            show_desktop_status_bar: !is_mobile_platform && !is_narrow,
+            show_top_subtitle: !is_mobile_platform && width >= 1080.0,
             summary_columns,
-            dual_stack_columns: if is_narrow { 1 } else { 2 },
-            minimal_card_columns: if is_narrow { 1 } else { 3 },
-            bottom_split_columns: if is_narrow { 1 } else { 2 },
+            dual_stack_columns: if is_mobile_platform {
+                if mobile_two_columns {
+                    2
+                } else {
+                    1
+                }
+            } else if is_narrow {
+                1
+            } else {
+                2
+            },
+            minimal_card_columns: if is_mobile_platform {
+                if mobile_two_columns {
+                    2
+                } else {
+                    1
+                }
+            } else if is_narrow {
+                1
+            } else {
+                3
+            },
+            bottom_split_columns: if is_mobile_platform {
+                if mobile_two_columns {
+                    2
+                } else {
+                    1
+                }
+            } else if is_narrow {
+                1
+            } else {
+                2
+            },
             drawer_width: (width * 0.34).clamp(300.0, 440.0),
+            mobile_layout: is_mobile_platform,
+            touch_friendly,
+            min_touch_height: if touch_friendly { 44.0 } else { 32.0 },
+            safe_area: SafeAreaInsets::for_platform(),
         }
     }
 }
@@ -116,6 +213,8 @@ pub enum ActiveTab {
     Timeline,
     Import,
     Settings,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    PluginPage,
 }
 
 impl ActiveTab {
@@ -128,6 +227,8 @@ impl ActiveTab {
             ActiveTab::Timeline => "时间线",
             ActiveTab::Import => "自定义导入",
             ActiveTab::Settings => "设置",
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ActiveTab::PluginPage => "扩展页面",
         }
     }
 
@@ -140,6 +241,8 @@ impl ActiveTab {
             ActiveTab::Timeline => "gui.tab.timeline",
             ActiveTab::Import => "gui.tab.import",
             ActiveTab::Settings => "gui.tab.settings",
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ActiveTab::PluginPage => "gui.tab.plugin_page",
         };
         translate(locale, key, &[])
     }

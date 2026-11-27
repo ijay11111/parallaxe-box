@@ -30,7 +30,7 @@ async fn fixture_report_projects_four_columns_without_new_packets() {
         .iter()
         .find(|row| row.target == "google.drive")
         .expect("drive 行");
-    assert_eq!(row.host, "drive.google.com");
+    assert_eq!(row.host, "support.google.com");
     assert_eq!(row.connection_edge.status, "OBSERVED");
     assert_eq!(row.connection_edge.attempts.len(), 1);
     assert!(row.connection_edge.peer_address.is_none());
@@ -80,6 +80,7 @@ async fn resolver_probe_refuses_user_imported_targets_without_querying() {
                 surface: Some("stage4-link".to_string()),
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )

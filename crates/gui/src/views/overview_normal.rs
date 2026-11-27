@@ -27,7 +27,7 @@ struct KpiSpec {
     ratio: Option<f32>,
 }
 
-pub fn metrics(ui: &mut Ui, p: Palette, run: Option<&RunView>, locale: Locale) {
+pub fn metrics(ui: &mut Ui, p: Palette, run: Option<&RunView>, locale: Locale, max_columns: usize) {
     let measured = run.filter(|r| !r.result_order.is_empty());
     let counts = measured.map(RunView::state_counts);
     let covered = run.and_then(|r| r.coverage.as_ref());
@@ -79,7 +79,7 @@ pub fn metrics(ui: &mut Ui, p: Palette, run: Option<&RunView>, locale: Locale) {
         },
     ];
 
-    let cols = if ui.available_width() < 680.0 { 2 } else { 4 };
+    let cols = if ui.available_width() < 680.0 { 2 } else { 4 }.min(max_columns.max(1));
     for (row_idx, chunk) in items.chunks(cols).enumerate() {
         if row_idx > 0 {
             ui.add_space(SPACE_4);
@@ -89,19 +89,20 @@ pub fn metrics(ui: &mut Ui, p: Palette, run: Option<&RunView>, locale: Locale) {
             card_frame(p).show(col_ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(84.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(&item.title)
-                            .size(FONT_META)
-                            .color(p.text_secondary),
+                ui.horizontal_wrapped(|ui| {
+                    let ic_col = match item.value.as_deref() {
+                        Some(v) if v != "0" && v != "0 / 0" => item.color,
+                        _ => p.text_muted,
+                    };
+                    icon(ui, item.icon, 14.5, ic_col);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&item.title)
+                                .size(FONT_META)
+                                .color(p.text_secondary),
+                        )
+                        .wrap(),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ic_col = match item.value.as_deref() {
-                            Some(v) if v != "0" && v != "0 / 0" => item.color,
-                            _ => p.text_muted,
-                        };
-                        icon(ui, item.icon, 14.5, ic_col);
-                    });
                 });
                 ui.add_space(SPACE_1);
                 let display = item.value.as_deref().unwrap_or("—");

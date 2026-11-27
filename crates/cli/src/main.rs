@@ -1,5 +1,9 @@
 //! `parallaxe` 命令行入口：clap 解析 → 共享 core → 投影输出与退出码。
 
+mod guard_backend;
+mod guard_journal;
+#[cfg(target_os = "linux")]
+mod nft_generation;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -56,8 +60,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect and explicitly approve local plugins.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     /// 只读探测（默认空许可：选中但不发包）
-    Check(CheckArgs),
+    Check(Box<CheckArgs>),
     /// 解释目标目录或离线样本
     Explain(ExplainArgs),
     /// 目录操作
@@ -65,9 +75,14 @@ enum Command {
         #[command(subcommand)]
         command: TargetsCommand,
     },
+    /// 输出编译期构建标记（不加载目录覆盖层）
+    BuildInfo {
+        #[arg(long)]
+        json: bool,
+    },
     /// 离线自检（不触网）
     Selftest(SelftestArgs),
-    /// Guard 只读预览（阶段 2 只给拒绝性预览）
+    /// Guard 预览、手动规则导出与只读审计
     Guard {
         #[command(subcommand)]
         command: GuardCommand,
@@ -92,6 +107,11 @@ enum Command {
         #[command(subcommand)]
         command: LinkCommand,
     },
+    /// AI 授权桥（只读状态；不开启、不代用户确认）
+    Ai {
+        #[command(subcommand)]
+        command: AiCommand,
+    },
     /// NDJSON stdio agent
     Agent {
         /// 仅支持 --stdio；不监听端口
@@ -100,6 +120,130 @@ enum Command {
     },
     /// 启动原生 egui 图形界面（仅本机窗口，消费共享核心事件流）
     Gui,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Subcommand)]
+enum PluginCommand {
+    List {
+        #[arg(long)]
+        settings: PathBuf,
+        #[arg(long)]
+        detailed: bool,
+    },
+    Verify {
+        directory: PathBuf,
+    },
+    Enable {
+        directory: PathBuf,
+        #[arg(long)]
+        settings: PathBuf,
+        #[arg(long)]
+        approve_sha256: String,
+    },
+    Disable {
+        id: String,
+        #[arg(long)]
+        settings: PathBuf,
+    },
+    Repair {
+        #[arg(long)]
+        settings: PathBuf,
+    },
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_plugin(command: &PluginCommand) -> ExitCode {
+    use parallaxe_core::{plugins, settings};
+    let result: Result<String, String> = (|| match command {
+        PluginCommand::List {
+            settings: path,
+            detailed,
+        } => {
+            let config = settings::load(path)?;
+            if !*detailed {
+                serde_json::to_string_pretty(&config.plugins).map_err(|e| e.to_string())
+            } else {
+                let entries: Vec<serde_json::Value> = config
+                    .plugins
+                    .iter()
+                    .map(|(id, sha256)| match plugins::read_enabled(&config, id) {
+                        Ok((_, manifest)) => serde_json::json!({
+                            "id": id,
+                            "name": manifest.name,
+                            "version": manifest.version,
+                            "author": manifest.author,
+                            "license": manifest.license,
+                            "permissions": manifest.permissions,
+                            "sha256": sha256,
+                            "status": "verified",
+                        }),
+                        Err(err) => serde_json::json!({
+                            "id": id,
+                            "sha256": sha256,
+                            "status": "error",
+                            "error": err,
+                        }),
+                    })
+                    .collect();
+                serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
+            }
+        }
+        PluginCommand::Verify { directory } => {
+            let (bytes, manifest) = plugins::read_directory(directory)?;
+            serde_json::to_string_pretty(
+                &serde_json::json!({"sha256": plugins::digest(&bytes), "manifest": manifest}),
+            )
+            .map_err(|e| e.to_string())
+        }
+        PluginCommand::Enable {
+            directory,
+            settings: path,
+            approve_sha256,
+        } => {
+            let (bytes, manifest) = plugins::read_directory(directory)?;
+            let normalized = plugins::normalize_sha256(approve_sha256)?;
+            plugins::verified(&bytes, &normalized)?;
+            let directory = std::fs::canonicalize(directory).map_err(|e| e.to_string())?;
+            let directory = directory
+                .to_str()
+                .ok_or("plugin path must be valid UTF-8")?
+                .to_string();
+            let id = manifest.id;
+            settings::update(path, |config| {
+                config.plugins.insert(id.clone(), normalized);
+                config.plugin_directories.insert(id.clone(), directory);
+                Ok(())
+            })?;
+            Ok(format!("enabled {id}"))
+        }
+        PluginCommand::Disable { id, settings: path } => {
+            settings::update(path, |config| {
+                config.plugins.remove(id);
+                config.plugin_directories.remove(id);
+                Ok(())
+            })?;
+            Ok(format!("disabled {id}"))
+        }
+        PluginCommand::Repair { settings: path } => {
+            let recovered = settings::repair(path)?;
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "repaired",
+                "enabled_plugins": recovered.plugins.len(),
+            }))
+            .map_err(|e| e.to_string())
+        }
+    })();
+    match result {
+        Ok(message) => {
+            emit!(writeln, stdout, "{}", message);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            emit!(writeln, stderr, "{}", error);
+            ExitCode::from(1)
+        }
+    }
 }
 
 #[derive(Args, Default)]
@@ -125,13 +269,23 @@ struct CheckArgs {
     interface: Option<String>,
     #[arg(long)]
     proxy: Option<String>,
+    /// 代理模式：auto（默认，自动探测）/ none（强制直连）/ http / socks / pac
+    #[arg(long = "proxy-mode", value_parser = ["auto", "none", "http", "socks", "pac"])]
+    proxy_mode: Option<String>,
+    /// PAC 网址（仅 --proxy-mode pac 使用；获取失败会回退自动选择并注明）
+    #[arg(long = "pac-url")]
+    pac_url: Option<String>,
+    /// 最大检测时长（毫秒）；0 = 不限时（默认按 profile，simple 为不限时）
     #[arg(long)]
     timeout: Option<u64>,
     #[arg(long = "max-concurrency")]
     max_concurrency: Option<u32>,
-    /// 同 host / 节点 / 协议的发送间隔（毫秒，0–5000；默认 3500）
+    /// 同 host / 节点 / 协议的发送间隔（毫秒，0–10000；默认 3500）
     #[arg(long = "min-interval-ms")]
     min_interval_ms: Option<u64>,
+    /// 跨目标（不同 host）检验之间的间隔（毫秒，0–10000；默认 0 不额外延迟）
+    #[arg(long = "inter-target-interval-ms")]
+    inter_target_interval_ms: Option<u64>,
     /// 小批次大小（1–15，默认 5）
     #[arg(long = "batch-size")]
     batch_size: Option<u32>,
@@ -169,6 +323,12 @@ struct CheckArgs {
     redact: bool,
     #[arg(long = "show-ip")]
     show_ip: bool,
+    /// 本地 IP 登记库，每行 CIDR,国家码,ASN
+    #[arg(long)]
+    address_book: Option<PathBuf>,
+    /// 与直连对端登记国家比较
+    #[arg(long, value_parser = parse_peer_country)]
+    expect_peer_country: Option<String>,
     #[arg(long = "state-dir")]
     state_dir: Option<PathBuf>,
     #[arg(long)]
@@ -234,9 +394,9 @@ enum GuardCommand {
         /// provider = 不污染式（推荐）；full = 整包替换（第二备选，强警示）
         #[arg(long, default_value = "provider", value_parser = ["provider", "full"])]
         mode: String,
-        /// 输出目录（会写入 1–3 个静态文件；不存在的目录会被创建）
+        /// 请显式指定导出文件夹（不存在的目录会被创建）
         #[arg(long)]
-        out: PathBuf,
+        out_dir: PathBuf,
         /// 整包替换必须显式确认：会覆盖原有分流规则，请先备份
         #[arg(long = "acknowledge-overwrite")]
         acknowledge_overwrite: bool,
@@ -244,6 +404,10 @@ enum GuardCommand {
         json: bool,
     },
     /// 系统级阻断：仅 Win/Linux，显式开启、可一键撤销（需管理员/root）
+    #[command(
+        hide = true,
+        override_help = "测试版不含系统级阻断。请用 guard plan 预览、guard status 查看审计。"
+    )]
     Block {
         #[arg(long)]
         target: Vec<String>,
@@ -268,7 +432,18 @@ enum GuardCommand {
         #[arg(long)]
         json: bool,
     },
-    /// 一键撤销系统阻断（按规则标签删除，零残留）
+    /// 读取本机写前审计和恢复指引（不发包）。
+    Status {
+        #[arg(long = "rule-tag", default_value = "default")]
+        rule_tag: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 核对并撤销本次运行拥有的规则
+    #[command(
+        hide = true,
+        override_help = "测试版不含系统级阻断。请用 guard plan 预览、guard status 查看审计。"
+    )]
     Unblock {
         #[arg(long = "rule-tag")]
         rule_tag: String,
@@ -281,6 +456,15 @@ enum GuardCommand {
     Rollback {
         #[arg(long = "plan-id")]
         plan_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AiCommand {
+    /// 打印 GUI 授权桥状态与待确认请求（只读，绝不代替用户确认）
+    Status {
         #[arg(long)]
         json: bool,
     },
@@ -375,6 +559,10 @@ fn print_error(error: &ConfigError) -> ExitCode {
     ExitCode::from(reports::usage_error_code())
 }
 
+fn parse_peer_country(value: &str) -> Result<String, String> {
+    parallaxe_core::normalize_country(value).ok_or_else(|| "invalid country code".into())
+}
+
 async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
     if args.redact && args.show_ip {
         emit!(writeln, stderr, "错误：--redact 与 --show-ip 互斥");
@@ -413,7 +601,51 @@ async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    let options = CheckOptions {
+    let proxy_mode = match args.proxy_mode.as_deref() {
+        None => parallaxe_core::ProxyMode::Auto,
+        Some(value) => match parallaxe_core::ProxyMode::parse(value) {
+            Some(mode) => mode,
+            None => {
+                emit!(
+                    writeln,
+                    stderr,
+                    "错误：--proxy-mode 只接受 auto/none/http/socks/pac"
+                );
+                return ExitCode::from(1);
+            }
+        },
+    };
+    if proxy_mode == parallaxe_core::ProxyMode::Socks {
+        emit!(
+            writeln,
+            stderr,
+            "错误：当前构建不支持 SOCKS 传输；请改用 --proxy-mode http / pac / none（不会静默直连）"
+        );
+        return ExitCode::from(1);
+    }
+    if proxy_mode == parallaxe_core::ProxyMode::Http && args.proxy.is_none() {
+        emit!(
+            writeln,
+            stderr,
+            "错误：--proxy-mode http 需要同时提供 --proxy http://host:port"
+        );
+        return ExitCode::from(1);
+    }
+    if proxy_mode == parallaxe_core::ProxyMode::Pac && args.pac_url.is_none() {
+        emit!(
+            writeln,
+            stderr,
+            "错误：--proxy-mode pac 需要 --pac-url http(s)://…/proxy.pac"
+        );
+        return ExitCode::from(1);
+    }
+    if args.fixture.is_some()
+        && (proxy_mode != parallaxe_core::ProxyMode::Auto || args.pac_url.is_some())
+    {
+        emit!(writeln, stderr, "错误：--fixture 与代理模式/PAC 互斥");
+        return ExitCode::from(1);
+    }
+    let mut options = CheckOptions {
         profile: args.profile.clone(),
         groups: args.group.clone(),
         targets: args.target.clone(),
@@ -422,18 +654,24 @@ async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
         fixture: args.fixture.clone(),
         state_dir: args.state_dir.clone(),
         proxy: args.proxy.clone(),
+        proxy_mode,
+        pac_url: args.pac_url.clone(),
+        proxy_path: None,
+        proxy_note: None,
         interface: args.interface.clone(),
         ipv4: args.ipv4,
         fast: args.fast,
         timeout_ms: args.timeout,
         max_concurrency: args.max_concurrency,
         min_interval_ms: args.min_interval_ms,
+        inter_target_interval_ms: args.inter_target_interval_ms,
         batch_size: args.batch_size,
         batch_cooldown_ms: args.batch_cooldown_ms,
         node_retest: args.node_retest,
         plan: args.plan,
         confirm_budget: args.confirm_budget,
         node_sweep: args.node_sweep,
+        qos_control: None,
         run_id: None,
     };
     if options.plan {
@@ -504,11 +742,47 @@ async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
             Err(error) => print_error(&error),
         };
     }
+    let book = match &args.address_book {
+        Some(path) => match std::fs::read_to_string(path)
+            .map_err(|_| "cannot read address book")
+            .and_then(|s| parallaxe_core::destination::AddressBook::parse(&s))
+        {
+            Ok(book) => book,
+            Err(message) => return print_error(&ConfigError::field("--address-book", message)),
+        },
+        None => Default::default(),
+    };
+    let expected_peer_country = match &args.expect_peer_country {
+        Some(raw) => match parallaxe_core::normalize_country(raw) {
+            Some(code) => Some(code),
+            None => {
+                return print_error(&ConfigError::field(
+                    "--expect-peer-country",
+                    "需要两位或三位国家码（如 US、CN、JPN）",
+                ))
+            }
+        },
+        None => None,
+    };
     let transport = if options.fixture.is_some() {
         None
     } else {
-        match parallaxe_core::probe::HttpTransport::new(options.proxy.clone(), None) {
-            Ok(transport) => Some(std::sync::Arc::new(transport)
+        // 有界代理探测/模式求值：在产生目标 HTTP 请求前完成；`--plan` 已在上面返回。
+        let prep = match runtime::prepare_network(registry, &options).await {
+            Ok(prep) => prep,
+            Err(error) => return print_error(&error),
+        };
+        if !prep.note.is_empty() {
+            emit!(writeln, stderr, "代理路径：{}", prep.note);
+        }
+        options.proxy_path = Some(prep.path_label);
+        options.proxy_note = Some(prep.note);
+        match parallaxe_core::probe::HttpTransport::new(prep.default_proxy, None) {
+            Ok(transport) => Some(std::sync::Arc::new(
+                transport
+                    .with_routes(prep.routes)
+                    .with_address_context(book, expected_peer_country),
+            )
                 as std::sync::Arc<dyn parallaxe_core::probe::Transport>),
             Err(message) => {
                 emit!(
@@ -522,7 +796,10 @@ async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
         }
     };
     match runtime::run_check(registry, &options, transport, true, None).await {
-        Ok(output) => {
+        Ok(mut output) => {
+            for result in &mut output.report.results {
+                result.destination.set_show_ip(args.show_ip);
+            }
             let report = &output.report;
             if args.trace || args.request_log {
                 emit!(
@@ -535,13 +812,13 @@ async fn run_check(registry: &Registry, args: CheckArgs) -> ExitCode {
                     report.termination.as_str()
                 );
             }
-            if args.json {
+            if format.as_deref() == Some("json") {
                 emit!(writeln, stdout, "{}", reports::to_json(report));
-            } else if args.jsonl {
+            } else if format.as_deref() == Some("jsonl") {
                 emit!(write, stdout, "{}", reports::to_jsonl(&output.events));
-            } else if args.html {
+            } else if format.as_deref() == Some("html") {
                 emit!(write, stdout, "{}", reports::to_html(report));
-            } else if args.csv {
+            } else if format.as_deref() == Some("csv") {
                 emit!(write, stdout, "{}", reports::to_csv(report));
             } else if format.as_deref() == Some("md") {
                 emit!(write, stdout, "{}", reports::to_markdown(report, locale()));
@@ -826,6 +1103,27 @@ fn build_guard_preview(
 }
 
 fn run_guard(registry: &Registry, command: GuardCommand) -> ExitCode {
+    // 发布策略独立于目录是否有候选，优先于 DNS、审计目录和系统后端。
+    if !parallaxe_core::sysblock::SYSTEM_BLOCK_ENABLED {
+        match &command {
+            GuardCommand::Block { json, .. }
+            | GuardCommand::Unblock {
+                apply: true, json, ..
+            } => {
+                return guard_output(
+                    *json,
+                    Err(guard_journal::Failure(
+                        "SYSBLOCK_BETA_DISABLED",
+                        "测试版不含系统级阻断".into(),
+                    )),
+                );
+            }
+            GuardCommand::Unblock { rule_tag, json, .. } => {
+                return guard_action(*json, |p, dir| guard_journal::status(dir, rule_tag, p));
+            }
+            _ => (),
+        }
+    }
     match command {
         GuardCommand::Plan {
             target,
@@ -838,7 +1136,7 @@ fn run_guard(registry: &Registry, command: GuardCommand) -> ExitCode {
             source_report,
             format,
             mode,
-            out,
+            out_dir,
             acknowledge_overwrite,
             json,
         } => run_guard_export(
@@ -847,7 +1145,7 @@ fn run_guard(registry: &Registry, command: GuardCommand) -> ExitCode {
             source_report,
             &format,
             &mode,
-            &out,
+            &out_dir,
             acknowledge_overwrite,
             json,
         ),
@@ -873,6 +1171,9 @@ fn run_guard(registry: &Registry, command: GuardCommand) -> ExitCode {
             &rule_tag,
             json,
         ),
+        GuardCommand::Status { rule_tag, json } => {
+            guard_action(json, |p, dir| guard_journal::status(dir, &rule_tag, p))
+        }
         GuardCommand::Unblock {
             rule_tag,
             apply,
@@ -1129,6 +1430,9 @@ fn run_guard_export(
         for path in &written {
             emit!(writeln, stdout, "  已写入：{}", path.display());
         }
+        for code in &bundle.warning_codes {
+            emit!(writeln, stdout, "{code}");
+        }
         for warning in &bundle.warnings {
             emit!(writeln, stdout, "  警示：{warning}");
         }
@@ -1163,94 +1467,59 @@ fn parse_ip_pairs(pairs: &[String]) -> Result<Vec<parallaxe_core::sysblock::Reso
         .collect())
 }
 
-fn resolve_candidates(
-    registry: &Registry,
-    plan: &GuardPlan,
-) -> Result<Vec<parallaxe_core::sysblock::ResolvedHost>, String> {
-    use std::net::ToSocketAddrs;
-    let mut hosts: Vec<parallaxe_core::sysblock::ResolvedHost> = Vec::new();
-    for id in &plan.candidates {
-        let Some(target) = registry.get(id) else {
-            continue;
-        };
-        let host = target.host();
-        let addresses = (host.as_str(), 443u16)
-            .to_socket_addrs()
-            .map_err(|_| format!("解析 {host} 失败：无法生成精确 IP 计划"))?
-            .map(|address| address.ip())
-            .collect::<Vec<_>>();
-        hosts.push(parallaxe_core::sysblock::ResolvedHost {
-            fqdn: host,
-            addresses,
-        });
+fn guard_output(json: bool, result: guard_journal::Result<serde_json::Value>) -> ExitCode {
+    let (mut doc, code) = match result {
+        Ok(doc) => (doc, 0),
+        Err(e) => (
+            serde_json::json!({"status":"REFUSED","code":e.0,"detail":e.1}),
+            3,
+        ),
+    };
+    if doc["code"] == "SYSBLOCK_BETA_DISABLED" {
+        doc["applied"] = serde_json::json!(false);
     }
-    Ok(hosts)
-}
-
-fn run_system_command(command: &str) -> Result<String, String> {
-    #[cfg(windows)]
-    let output = std::process::Command::new("cmd")
-        .args(["/C", command])
-        .output();
-    #[cfg(not(windows))]
-    let output = std::process::Command::new("sh")
-        .args(["-c", command])
-        .output();
-    let output = output.map_err(|error| format!("无法启动命令：{error}"))?;
-    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if output.status.success() {
-        Ok(text)
+    if doc.get("schema").is_none() {
+        doc["schema"] = serde_json::json!(parallaxe_core::sysblock::SYSBLOCK_SCHEMA);
+    }
+    if json {
+        emit!(
+            writeln,
+            stdout,
+            "{}",
+            serde_json::to_string_pretty(&doc).unwrap_or_default()
+        );
     } else {
-        Err(text)
-    }
-}
-
-fn existing_rule_present(
-    platform: parallaxe_core::sysblock::Platform,
-    rule_tag: &str,
-) -> Result<bool, String> {
-    use parallaxe_core::sysblock::Platform;
-    match platform {
-        Platform::Windows => {
-            let command =
-                format!("netsh advfirewall firewall show rule name=\"parallaxe-block-{rule_tag}\"");
-            match run_system_command(&command) {
-                Ok(text) => Ok(text.contains("Rule Name") || text.contains("规则名称")),
-                Err(text) => {
-                    if text.contains("No rules match")
-                        || text.contains("没有与指定条件相匹配的规则")
-                    {
-                        Ok(false)
-                    } else {
-                        Err(text)
-                    }
-                }
-            }
-        }
-        Platform::Linux => {
-            let command = format!("nft list table inet parallaxe_{rule_tag}");
-            match run_system_command(&command) {
-                Ok(_) => Ok(true),
-                Err(text) => {
-                    if text.contains("No such file or directory") || text.contains("does not exist")
-                    {
-                        Ok(false)
-                    } else {
-                        Err(text)
-                    }
-                }
-            }
+        if doc["code"] == "SYSBLOCK_NO_AUDIT" {
+            emit!(writeln,stdout,"DRY_RUN · parallaxe-block-{}：缺少本次运行的审计记录。即使加 --apply 也会拒绝删除（UNBLOCK_FOREIGN_RULE）。",doc["rule_tag"].as_str().unwrap_or_default());
+        } else {
+            emit!(
+                writeln,
+                stdout,
+                "{}",
+                serde_json::to_string_pretty(&doc).unwrap_or_default()
+            );
         }
     }
+    ExitCode::from(code)
 }
-
-fn write_audit(path: &std::path::Path, document: &serde_json::Value) -> Result<(), String> {
-    let text =
-        serde_json::to_string_pretty(document).map_err(|_| "审计记录无法序列化".to_string())?;
-    std::fs::write(path, text).map_err(|error| format!("写入审计记录失败：{error}"))
+fn guard_action(
+    json: bool,
+    op: impl FnOnce(
+        parallaxe_core::sysblock::Platform,
+        &std::path::Path,
+    ) -> guard_journal::Result<serde_json::Value>,
+) -> ExitCode {
+    let Some(p) = parallaxe_core::sysblock::Platform::current() else {
+        return guard_output(
+            json,
+            Err(guard_journal::Failure(
+                "SYSBLOCK_UNSUPPORTED",
+                "系统阻断仅支持 Windows / Linux".into(),
+            )),
+        );
+    };
+    guard_output(json, guard_journal::directory().and_then(|dir| op(p, &dir)))
 }
-
 #[allow(clippy::too_many_arguments)]
 fn run_guard_block(
     registry: &Registry,
@@ -1272,6 +1541,18 @@ fn run_guard_block(
         );
         return ExitCode::from(1);
     };
+    let dir = match guard_journal::directory() {
+        Ok(dir) => dir,
+        Err(e) => return guard_output(json, Err(e)),
+    };
+    match guard_journal::pending(&dir, rule_tag, platform) {
+        Ok(None) => (),
+        Ok(Some(doc)) => {
+            guard_output(json, Ok(doc));
+            return ExitCode::from(3);
+        }
+        Err(e) => return guard_output(json, Err(e)),
+    }
     if apply && !confirm {
         emit!(
             writeln,
@@ -1303,30 +1584,22 @@ fn run_guard_block(
             return ExitCode::from(1);
         }
     };
-    let mut resolved = manual;
-    if resolve {
-        match resolve_candidates(registry, &preview.plan) {
-            Ok(items) => {
-                for item in items {
-                    if !resolved.iter().any(|existing| existing.fqdn == item.fqdn) {
-                        resolved.push(item);
-                    }
-                }
+    let now = parallaxe_core::state::format_time(OffsetDateTime::now_utc());
+    let plan = &preview.plan;
+    let result = if resolve {
+        parallaxe_core::sysblock::resolve_plan(registry, plan, platform, now, rule_tag)
+    } else {
+        parallaxe_core::sysblock::candidate_hosts(registry, plan, rule_tag).and_then(|_| {
+            if apply {
+                return Err(parallaxe_core::sysblock::SysBlockError {
+                    code: "SYSBLOCK_RESOLUTION_REQUIRED",
+                    detail: "实际写入需要 --resolve，手工 IP 仅供预览。".into(),
+                });
             }
-            Err(message) => {
-                emit!(writeln, stderr, "错误：{message}");
-                return ExitCode::from(1);
-            }
-        }
-    }
-    let sys_plan = match parallaxe_core::sysblock::build_plan(
-        registry,
-        &preview.plan,
-        &resolved,
-        platform,
-        parallaxe_core::state::format_time(OffsetDateTime::now_utc()),
-        rule_tag,
-    ) {
+            parallaxe_core::sysblock::build_plan(registry, plan, &manual, platform, now, rule_tag)
+        })
+    };
+    let sys_plan = match result {
         Ok(plan) => plan,
         Err(error) => {
             if json {
@@ -1404,167 +1677,23 @@ fn run_guard_block(
         return ExitCode::SUCCESS;
     }
 
-    match existing_rule_present(platform, rule_tag) {
-        Ok(true) => {
-            emit!(
-                writeln,
-                stderr,
-                "错误：已存在同名规则 {}；请先 guard unblock --rule-tag {} 再重新应用。",
-                sys_plan.rule_tag,
-                rule_tag
-            );
-            return ExitCode::from(1);
-        }
-        Ok(false) => {}
-        Err(message) => {
-            emit!(writeln, stderr, "错误：无法检查既有规则：{message}");
-            return ExitCode::from(1);
-        }
-    }
-
-    let created_at = sys_plan.created_at.clone();
-    let audit_path =
-        audit_out.unwrap_or_else(|| PathBuf::from(format!("sysblock-{rule_tag}.json")));
-    for command in &sys_plan.apply_commands {
-        if let Err(message) = run_system_command(command) {
-            let mut rollback_failed = Vec::new();
-            for rollback in &sys_plan.rollback_commands {
-                if let Err(error) = run_system_command(rollback) {
-                    rollback_failed.push(error);
-                }
-            }
-            let document = serde_json::json!({
-                "schema": parallaxe_core::sysblock::SYSBLOCK_SCHEMA,
-                "status": "APPLY_FAILED_ROLLED_BACK",
-                "created_at": created_at,
-                "rule_tag": sys_plan.rule_tag,
-                "error": message,
-                "rollback_failed": rollback_failed,
-                "entries": sys_plan.entries,
-            });
-            if let Err(error) = write_audit(&audit_path, &document) {
-                emit!(writeln, stderr, "错误：{error}");
-            }
-            emit!(
-                writeln,
-                stderr,
-                "错误：写入系统失败，已尝试回滚。审计：{}",
-                audit_path.display()
-            );
-            return ExitCode::from(1);
-        }
-    }
-    let document = serde_json::json!({
-        "schema": parallaxe_core::sysblock::SYSBLOCK_SCHEMA,
-        "status": "APPLIED",
-        "created_at": created_at,
-        "rule_tag": sys_plan.rule_tag,
-        "platform": sys_plan.platform,
-        "engine": sys_plan.engine,
-        "entries": sys_plan.entries,
-        "rollback_commands": sys_plan.rollback_commands,
-        "zero_residue": true,
-    });
-    if let Err(error) = write_audit(&audit_path, &document) {
-        emit!(writeln, stderr, "错误：{error}");
-        return ExitCode::from(1);
-    }
-    if json {
-        emit!(
-            writeln,
-            stdout,
-            "{}",
-            serde_json::to_string_pretty(&document).unwrap_or_default()
-        );
-    } else {
-        emit!(
-            writeln,
-            stdout,
-            "已写入系统阻断：{}（{} 条 IP）。撤销：guard unblock --rule-tag {} --apply",
-            sys_plan.rule_tag,
-            sys_plan.entries.len(),
-            rule_tag
-        );
-        emit!(writeln, stdout, "审计：{}", audit_path.display());
-    }
-    ExitCode::SUCCESS
+    guard_output(
+        json,
+        guard_journal::block(
+            &dir,
+            platform,
+            rule_tag,
+            &sys_plan,
+            audit_out.as_deref(),
+            &guard_backend::System(platform),
+        ),
+    )
 }
 
-fn run_guard_unblock(rule_tag: &str, apply: bool, json: bool) -> ExitCode {
-    let Some(platform) = parallaxe_core::sysblock::Platform::current() else {
-        emit!(
-            writeln,
-            stderr,
-            "错误：系统阻断仅支持 Windows / Linux；本平台没有可撤销的规则。"
-        );
-        return ExitCode::from(1);
-    };
-    let commands = match parallaxe_core::sysblock::unblock_commands(platform, rule_tag) {
-        Ok(commands) => commands,
-        Err(error) => {
-            emit!(writeln, stderr, "错误：{} — {}", error.code, error.detail);
-            return ExitCode::from(1);
-        }
-    };
-    if !apply {
-        if json {
-            emit!(
-                writeln,
-                stdout,
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "schema": parallaxe_core::sysblock::SYSBLOCK_SCHEMA,
-                    "status": "DRY_RUN",
-                    "commands": commands,
-                }))
-                .unwrap_or_default()
-            );
-        } else {
-            for command in &commands {
-                emit!(writeln, stdout, "将执行：{command}");
-            }
-            emit!(writeln, stdout, "加 --apply 才会真正撤销。");
-        }
-        return ExitCode::SUCCESS;
-    }
-    let mut status = "REVOKED";
-    for command in &commands {
-        if let Err(message) = run_system_command(command) {
-            if message.contains("No rules match")
-                || message.contains("没有与指定条件相匹配的规则")
-                || message.contains("No such file or directory")
-                || message.contains("does not exist")
-            {
-                status = "ALREADY_ABSENT";
-                continue;
-            }
-            emit!(writeln, stderr, "错误：撤销失败：{message}");
-            return ExitCode::from(1);
-        }
-    }
-    if json {
-        emit!(
-            writeln,
-            stdout,
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema": parallaxe_core::sysblock::SYSBLOCK_SCHEMA,
-                "status": status,
-                "rule_tag": format!("parallaxe-block-{rule_tag}"),
-                "zero_residue": true,
-            }))
-            .unwrap_or_default()
-        );
-    } else {
-        emit!(
-            writeln,
-            stdout,
-            "撤销完成：parallaxe-block-{}（{}，零残留）",
-            rule_tag,
-            status
-        );
-    }
-    ExitCode::SUCCESS
+fn run_guard_unblock(tag: &str, apply: bool, json: bool) -> ExitCode {
+    guard_action(json, |p, dir| {
+        guard_journal::unblock(dir, p, tag, apply, &guard_backend::System(p))
+    })
 }
 
 async fn run_link(registry: &Registry, command: LinkCommand) -> ExitCode {
@@ -1585,7 +1714,9 @@ async fn run_link(registry: &Registry, command: LinkCommand) -> ExitCode {
             ..Default::default()
         };
         match runtime::run_check(registry, &options, None, false, None).await {
-            Ok(output) => linkcheck::analyze(registry, &output.report, generated_at),
+            Ok(output) => {
+                linkcheck::analyze_with_ip(registry, &output.report, generated_at, show_ip)
+            }
             Err(error) => return print_error(&error),
         }
     } else {
@@ -1707,6 +1838,30 @@ fn run_isolate(command: IsolateCommand) -> ExitCode {
 }
 
 async fn run(cli: Cli) -> ExitCode {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if !cli.selftest {
+        if let Some(Command::Plugin { command }) = &cli.command {
+            return run_plugin(command);
+        }
+    }
+    if let Some(Command::BuildInfo { json }) = &cli.command {
+        let info = parallaxe_core::distribution::build_info_json();
+        if *json {
+            let pretty = serde_json::to_string_pretty(
+                &serde_json::from_str::<serde_json::Value>(&info).unwrap_or_default(),
+            )
+            .unwrap_or(info);
+            emit!(writeln, stdout, "{pretty}");
+        } else {
+            emit!(
+                writeln,
+                stdout,
+                "{}",
+                parallaxe_core::distribution::BUILD_MARKER
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
     let registry = match load_registry(&cli) {
         Ok(registry) => registry,
         Err(error) => return print_error(&error),
@@ -1733,9 +1888,12 @@ async fn run(cli: Cli) -> ExitCode {
         return ExitCode::from(1);
     };
     match command {
-        Command::Check(args) => run_check(&registry, args).await,
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        Command::Plugin { command } => run_plugin(&command),
+        Command::Check(args) => run_check(&registry, *args).await,
         Command::Explain(args) => run_explain(&registry, args).await,
         Command::Targets { command } => run_targets(&registry, command),
+        Command::BuildInfo { .. } => unreachable!("build-info is handled before registry loading"),
         Command::Selftest(args) => run_selftest(&registry, args).await,
         Command::Guard { command } => run_guard(&registry, command),
         Command::Isolate { command } => run_isolate(command),
@@ -1799,6 +1957,7 @@ async fn run(cli: Cli) -> ExitCode {
             Err(error) => print_error(&error),
         },
         Command::Link { command } => run_link(&registry, command).await,
+        Command::Ai { command } => run_ai(command),
         Command::Agent { stdio } => {
             if !stdio {
                 emit!(
@@ -1814,6 +1973,95 @@ async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(code)
         }
         Command::Gui => run_gui_command(registry),
+    }
+}
+
+fn run_ai(command: AiCommand) -> ExitCode {
+    use parallaxe_core::ai_bridge::BridgePaths;
+    let paths = BridgePaths::resolve();
+    let status = paths.read_status();
+    let requests = paths.read_requests();
+    let live = status.as_ref().is_some_and(|status| {
+        time::OffsetDateTime::parse(
+            &status.updated_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .is_ok_and(|at| time::OffsetDateTime::now_utc() - at < time::Duration::seconds(120))
+    });
+    match command {
+        AiCommand::Status { json } => {
+            if json {
+                let doc = serde_json::json!({
+                    "schema": "parallaxe.ai.bridge.status/v1",
+                    "available": live,
+                    "host": status.as_ref().map(|s| s.host.clone()),
+                    "autonomous_enabled": status
+                        .as_ref()
+                        .is_some_and(|s| s.autonomous_enabled && live),
+                    "session_only": true,
+                    "imported_targets": status
+                        .as_ref()
+                        .map(|s| s.imported_targets.clone())
+                        .unwrap_or_default(),
+                    "requests": requests.iter().map(|request| serde_json::json!({
+                        "request_id": request.request_id,
+                        "scope": request.scope.label(),
+                        "min_interval_ms": request.min_interval_ms,
+                        "batch_size": request.batch_size,
+                        "expires_at": request.expires_at,
+                    })).collect::<Vec<_>>(),
+                });
+                emit!(writeln, stdout, "{}", doc);
+            } else if !live {
+                emit!(
+                    writeln,
+                    stdout,
+                    "AI 授权桥：未检测到 GUI（默认零发包）。请先打开 Parallaxe box 桌面程序。"
+                );
+            } else {
+                let host = status.as_ref().map(|s| s.host.as_str()).unwrap_or("-");
+                let autonomous = status.as_ref().is_some_and(|s| s.autonomous_enabled);
+                let imported = status
+                    .as_ref()
+                    .map(|s| s.imported_targets.join(", "))
+                    .unwrap_or_default();
+                emit!(writeln, stdout, "AI 授权桥：已连接（host={host}，会话级）");
+                emit!(
+                    writeln,
+                    stdout,
+                    "自主检测：{}（仅用户在 GUI 设置中打开；关闭不落盘）",
+                    if autonomous {
+                        "已开启"
+                    } else {
+                        "关闭（默认）"
+                    }
+                );
+                emit!(
+                    writeln,
+                    stdout,
+                    "可真实发包的导入目标：{}",
+                    if imported.is_empty() {
+                        "无（内置目录默认零发包）"
+                    } else {
+                        &imported
+                    }
+                );
+                emit!(writeln, stdout, "待确认请求：{}", requests.len());
+                for request in &requests {
+                    emit!(
+                        writeln,
+                        stdout,
+                        "  {} · {} · 间隔 {}ms · 批次 {} · 过期 {}",
+                        request.request_id,
+                        request.scope.label(),
+                        request.min_interval_ms,
+                        request.batch_size,
+                        request.expires_at
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -1860,6 +2108,13 @@ fn main() -> ExitCode {
                     0
                 }
                 _ => {
+                    if error.kind() == clap::error::ErrorKind::MissingRequiredArgument
+                        && error
+                            .get(clap::error::ContextKind::InvalidArg)
+                            .is_some_and(|arg| arg.to_string().starts_with("--out-dir "))
+                    {
+                        emit!(writeln, stderr, "请显式指定导出文件夹：--out-dir <DIR>");
+                    }
                     emit!(write, stderr, "{error}");
                     1
                 }

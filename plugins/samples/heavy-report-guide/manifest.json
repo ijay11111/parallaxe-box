@@ -1,0 +1,45 @@
+{
+  "schema": "parallaxe.plugin/v1",
+  "id": "sample.heavy.report-guide",
+  "name": "报告阅读指南（示例重插件）",
+  "version": "1.0.0",
+  "author": "Parallaxe box contributors",
+  "license": "MIT OR Apache-2.0",
+  "source": "https://github.com/ijay11111/parallaxe-box/tree/main/plugins/samples/heavy-report-guide",
+  "permissions": [],
+  "operations": [
+    {"type": "hook", "event": "complete", "text": "可打开插件页查看字段说明。"}
+  ],
+  "pages": [
+    {
+      "id": "guide",
+      "title": "报告阅读指南",
+      "components": [
+        {"type": "heading", "text": "如何读懂一次检测结果"},
+        {"type": "badge", "text": "示例页面 · 只读"},
+        {"type": "callout", "text": "本页只解释报告字段，不参与判定，也不发起任何请求。"},
+        {"type": "progress", "label": "静态示例值，不跟随真实运行", "value": 60},
+        {
+          "type": "table",
+          "headers": ["字段", "含义", "来源"],
+          "rows": [
+            ["state", "九态判定之一，界面徽标只据此着色", "核心判定"],
+            ["source", "证据来源，区分内置、用户导入与离线样本", "目标登记"],
+            ["confidence", "信号可信度，不代表网络质量评分", "信号规则"],
+            ["coverage", "覆盖与未覆盖目标的计数", "运行结果"]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "### 三个不要\n\n1. 不要把徽标颜色当成购买资格结论。\n2. 不要用连续重试代替失败原因分析。\n3. 不要在批量探测时缩短间隔。"
+        },
+        {
+          "type": "code",
+          "text": "parallaxe check --headless --profile simple --format md"
+        },
+        {"type": "form", "label": "备注（静态描述，本协议版本不接收输入）"},
+        {"type": "button", "label": "返回报告（静态描述，点击行为由宿主决定）"}
+      ]
+    }
+  ]
+}

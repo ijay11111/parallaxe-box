@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+distribution-release = ["parallaxe-core/distribution-release"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -19,6 +22,7 @@ time.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Web/WASM：离线解释界面 + 剪贴板降级；不使用 tokio 多线程/文件系统。
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -31,6 +35,7 @@ web-sys = { version = "0.3", features = [
     "HtmlCanvasElement",
     "Navigator",
     "Clipboard",
+    "Storage",
 ] }
 
 # Android 原生入口：game-activity（与 eframe 的 android-game-activity feature 对齐）。
@@ -40,4 +45,3 @@ winit = { version = "0.30", default-features = false, features = ["android-game-
 
 [dev-dependencies]
 parallaxe-agent = { path = "../agent" }
-image = { version = "0.25", default-features = false, features = ["png"] }

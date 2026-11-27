@@ -1,0 +1,17 @@
+{
+  "schema": "parallaxe.plugin/v1",
+  "id": "sample.light.report-badge",
+  "name": "报告覆盖徽标（示例轻插件）",
+  "version": "1.0.0",
+  "author": "Parallaxe box contributors",
+  "license": "MIT OR Apache-2.0",
+  "source": "https://github.com/ijay11111/parallaxe-box/tree/main/plugins/samples/light-report-badge",
+  "permissions": ["report_counts"],
+  "operations": [
+    {"type": "coverage_badge", "prefix": "覆盖 "},
+    {"type": "resolver", "input": "default-profile", "output": "simple"},
+    {"type": "hook", "event": "start", "text": "开始检测：按批次与间隔执行，判定由核心给出。"},
+    {"type": "hook", "event": "complete", "text": "检测结束：仍以报告与退出码为准。"},
+    {"type": "hook", "event": "error", "text": "检测未完成：请查看错误种类，不要连续重试。"}
+  ]
+}

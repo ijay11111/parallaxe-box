@@ -89,10 +89,83 @@ fn csv_cell(value: &str) -> String {
     format!("\"{}{escaped}\"", if dangerous { "'" } else { "" })
 }
 
+const DEST_COLUMNS: [&str; 12] = [
+    "target",
+    "peer_role",
+    "resolved_addresses",
+    "peer_address",
+    "resolved_countries",
+    "peer_country",
+    "peer_asn",
+    "address_consistency",
+    "expected_country",
+    "region_consistency",
+    "markers",
+    "http_egress_country",
+];
+
+fn destination_cells(result: &ResultRecord) -> [String; 12] {
+    let d = &result.destination;
+    let withheld = |observed| if observed { "REDACTED" } else { "NOT_OBSERVED" }.to_string();
+    let token = |value: serde_json::Value| value.as_str().unwrap_or("NOT_OBSERVED").to_string();
+    [
+        result.target.clone(),
+        token(serde_json::json!(d.peer_role)),
+        if d.resolved_addresses.is_empty() {
+            withheld(d.resolved_count > 0)
+        } else {
+            d.resolved_addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        },
+        d.peer_address
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| withheld(d.peer_observed)),
+        d.resolved_countries
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+        d.peer_country.clone().unwrap_or_default(),
+        d.peer_asn.map(|a| a.to_string()).unwrap_or_default(),
+        token(serde_json::json!(d.address_consistency)),
+        d.expected_country.clone().unwrap_or_default(),
+        token(serde_json::json!(d.region_consistency)),
+        d.markers().collect::<Vec<_>>().join(" "),
+        result
+            .region_layers
+            .iter()
+            .find(|l| l.layer == Layer::EgressNetwork)
+            .and_then(|l| l.value.clone())
+            .unwrap_or_default(),
+    ]
+}
+
+pub fn official_reference(result: &ResultRecord, locale: Locale) -> String {
+    let specific = result
+        .eligibility_notes
+        .iter()
+        .any(|n| n.summary_key.ends_with("available_regions"));
+    result
+        .eligibility_notes
+        .iter()
+        .filter(|n| {
+            n.summary_key.ends_with("available_regions")
+                || (!specific && n.summary_key == "eligibility.gate.region_list_independent")
+        })
+        .map(|n| format!("{} ({})", n.summary(locale), n.source_url))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// CSV 表格导出（不改变判定）。
 pub fn to_csv(report: &Report) -> String {
     let mut out = String::new();
-    out.push_str("target,state,reason,confidence,source,observed_country,region_layers,path,duration_ms,request_count,covered,notes\n");
+    out.push_str("target,state,reason,confidence,source,observed_country,region_layers,path,duration_ms,request_count,covered,notes,");
+    out.push_str(&DEST_COLUMNS[1..].join(","));
+    out.push_str(",official_availability_reference\n");
     for result in &report.results {
         let layers = result
             .region_layers
@@ -114,6 +187,13 @@ pub fn to_csv(report: &Report) -> String {
                 result.imported_at.as_deref().unwrap_or(""),
                 result.rule_digest.as_deref().unwrap_or("")
             )
+        } else if let Some(origin) = &report.origin {
+            format!(
+                "{};origin={};autonomous_mode={}",
+                result.local_policy.reason.as_deref().unwrap_or(""),
+                origin,
+                report.autonomous_mode.unwrap_or(false)
+            )
         } else {
             result
                 .local_policy
@@ -123,7 +203,7 @@ pub fn to_csv(report: &Report) -> String {
                 .to_string()
         };
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},",
             csv_cell(&result.target),
             csv_cell(result.state.as_str()),
             csv_cell(result.reason.as_deref().unwrap_or("")),
@@ -151,6 +231,16 @@ pub fn to_csv(report: &Report) -> String {
                 .any(|item| item.target == result.target),
             csv_cell(&notes_text),
         ));
+        out.push_str(
+            &destination_cells(result)[1..]
+                .iter()
+                .map(|v| csv_cell(v))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        out.push(',');
+        out.push_str(&csv_cell(&official_reference(result, Locale::ZhCn)));
+        out.push('\n');
     }
     out
 }
@@ -272,6 +362,7 @@ pub fn to_table_locale(report: &Report, locale: Locale) -> String {
             &[&catalog, &selected, &covered, &uncovered, &requests, &exit_code,]
         )
     ));
+    text.push_str(&destination_text(report, locale));
     // E-2：人读输出追加一行克制的资格说明，不参与判定。
     text.push_str(&format!(
         "{}\n",
@@ -281,6 +372,36 @@ pub fn to_table_locale(report: &Report, locale: Locale) -> String {
 }
 
 /// Markdown 单元格：转义 `|`、把换行压成空格、空值写 `—`。
+fn destination_text(report: &Report, locale: Locale) -> String {
+    let mut text = String::new();
+    for r in &report.results {
+        let cells = destination_cells(r);
+        text.push_str(&format!(
+            "{}  {}\n",
+            r.target,
+            DEST_COLUMNS[1..]
+                .iter()
+                .zip(&cells[1..])
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("  ")
+        ));
+        let note = official_reference(r, locale);
+        if !note.is_empty() {
+            text.push_str(&format!(
+                "{}: {}\n",
+                r.service_observed
+                    .observed_country
+                    .as_deref()
+                    .unwrap_or("NOT_OBSERVED"),
+                note
+            ));
+        }
+    }
+    text
+}
+
 fn md_cell(value: &str) -> String {
     let flattened = value
         .replace('|', "\\|")
@@ -323,6 +444,16 @@ pub fn to_markdown(report: &Report, locale: Locale) -> String {
             &[&report.run_id, mode_label(report.mode)]
         )
     ));
+    if let Some(scope) = report.scope {
+        out.push_str(scope.description());
+        out.push('\n');
+    }
+    if let Some(origin) = report.origin.as_deref() {
+        out.push_str(&format!(
+            "- origin={origin} · autonomous_mode={}\n",
+            report.autonomous_mode.unwrap_or(false)
+        ));
+    }
     out.push_str(&format!(
         "- {}\n",
         translate(locale, "report.meta.run", &[&report.run_id])
@@ -480,6 +611,30 @@ pub fn to_markdown(report: &Report, locale: Locale) -> String {
         translate(locale, "report.section.notes", &[]),
         translate(locale, "report.eligibility_disclaimer", &[])
     ));
+    out.push_str(&format!(
+        "\n## {}\n\n| {} | observed_country | official_availability_reference |\n|{}|\n",
+        translate(locale, "report.destination", &[]),
+        DEST_COLUMNS.join(" | "),
+        vec!["---"; DEST_COLUMNS.len() + 2].join("|")
+    ));
+    for r in &report.results {
+        let mut cells = destination_cells(r).to_vec();
+        cells.extend([
+            r.service_observed
+                .observed_country
+                .clone()
+                .unwrap_or_default(),
+            official_reference(r, locale),
+        ]);
+        out.push_str(&format!(
+            "| {} |\n",
+            cells
+                .iter()
+                .map(|v| md_cell(v))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
     out
 }
 
@@ -535,6 +690,17 @@ pub fn to_text(report: &Report, locale: Locale) -> String {
         "report.heading",
         &[&report.run_id, mode_label(report.mode)],
     ));
+    if let Some(scope) = report.scope {
+        out.push('\n');
+        out.push_str(scope.description());
+        out.push('\n');
+    }
+    if let Some(origin) = report.origin.as_deref() {
+        out.push_str(&format!(
+            "\norigin={origin} · autonomous_mode={}\n",
+            report.autonomous_mode.unwrap_or(false)
+        ));
+    }
     out.push_str("\n\n");
     out.push_str(&translate(locale, "report.meta.run", &[&report.run_id]));
     out.push('\n');
@@ -698,6 +864,7 @@ pub fn to_text(report: &Report, locale: Locale) -> String {
     }
 
     out.push('\n');
+    out.push_str(&destination_text(report, locale));
     out.push_str(&translate(locale, "report.section.notes", &[]));
     out.push('\n');
     out.push_str(&translate(locale, "report.eligibility_disclaimer", &[]));
@@ -824,13 +991,14 @@ th{{background:#f1eee6;position:sticky;top:0}}
 .s-restricted,.s-blocked,.s-local-path-error{{border-color:#a32222;color:#a32222}}
 .s-unknown,.s-conflict,.s-signal-stale,.s-unsupported{{border-color:#8a5a00;color:#8a5a00}}
 .conflict{{color:#a32222;font-size:12px;margin-top:4px}}
+.warn{{color:#a32222;font-weight:600}}
 ul{{margin:0;padding-left:20px;color:var(--muted)}}
 footer{{margin-top:40px;color:var(--muted);font-size:12px}}
 </style>
 </head>
 <body>
 <main>
-<h1>Parallaxe box 报告</h1>
+<h1>Parallaxe box 报告</h1>{scope}{origin_banner}
 <p class="meta">运行 {run_id} · 模式 {mode} · 生成 {generated_at} · 退出码 {exit_code} · 终止 {termination}</p>
 <p class="meta">目录 {catalog} / 选中 {selected} / 已覆盖 {covered} / 未覆盖 {uncovered_count} · 网络请求 {requests}</p>
 <h2>结果</h2>
@@ -840,6 +1008,8 @@ footer{{margin-top:40px;color:var(--muted);font-size:12px}}
 {rows}
 </tbody>
 </table>
+<h2>服务与连接地址</h2>
+<table><thead><tr>{dest_headers}<th>观测到的所属国家/地区</th><th>官方可用性参照</th></tr></thead><tbody>{dest_rows}</tbody></table>
 <h2>本次未覆盖</h2>
 <ul>{uncovered}</ul>
 <p class="meta">资格提示：访问可达不等于订阅或完整功能可用；地区清单、账号类型、年龄、家庭组、付款档案与网络修改器检测均可能影响资格，本软件不验证账号状态，请核对官方清单。</p>
@@ -848,6 +1018,55 @@ footer{{margin-top:40px;color:var(--muted);font-size:12px}}
 </body>
 </html>
 "#,
+        dest_headers = DEST_COLUMNS
+            .iter()
+            .map(|v| format!("<th>{v}</th>"))
+            .collect::<String>(),
+        dest_rows = report
+            .results
+            .iter()
+            .map(|r| {
+                let mut cells = destination_cells(r).to_vec();
+                cells.extend([
+                    r.service_observed
+                        .observed_country
+                        .clone()
+                        .unwrap_or_default(),
+                    official_reference(r, Locale::ZhCn),
+                ]);
+                format!(
+                    "<tr>{}</tr>",
+                    cells
+                        .iter()
+                        .map(|v| {
+                            if v.contains("ADDRESS_MISMATCH")
+                                || v.contains("UNEXPECTED_REGION")
+                                || v == "MISMATCH"
+                            {
+                                format!("<td class=\"warn\">{}</td>", escape(v))
+                            } else {
+                                format!("<td>{}</td>", escape(v))
+                            }
+                        })
+                        .collect::<String>()
+                )
+            })
+            .collect::<String>(),
+        scope = report
+            .scope
+            .map(|s| format!("<p class=\"meta\">{}</p>", escape(s.description())))
+            .unwrap_or_default(),
+        origin_banner = report
+            .origin
+            .as_deref()
+            .map(|origin| {
+                format!(
+                    "<p class=\"meta\">origin={} · autonomous_mode={}</p>",
+                    escape(origin),
+                    report.autonomous_mode.unwrap_or(false)
+                )
+            })
+            .unwrap_or_default(),
         run_id = escape(&report.run_id),
         mode = match report.mode {
             Mode::Online => "ONLINE",

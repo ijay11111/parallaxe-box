@@ -16,8 +16,8 @@
 
 | 列 | 结构体字段 | 回答的问题 | 防混淆铁律 |
 |---|---|---|---|
-| **1. `resolver`** | `status`, `v4`, `v6`, `addresses[]`, `reason` | 本机系统解析器对目标主机返回了多少 v4/v6 记录？ | 默认零发包（`NOT_OBSERVED`）；仅显式 `--resolve` 时对内置目录主机查询一次；默认 `addresses = []` 脱敏，仅 `--show-ip` 才展示本地解析结果 |
-| **2. `connection_edge`** | `status`, `observed_family`, `attempts[]`, `peer_address`, `reason` | 实际传输尝试的阶段、首包耗时、HTTP 状态与观察地址族是什么？ | 当前 `reqwest` 不暴露原始对端地址，故 `peer_address` 保持 `null`（宁缺勿伪造）；区分「尝试」与「实际已发 HTTP 请求（`request_sent`）」 |
+| **1. `resolver`** | `status`, `v4`, `v6`, `addresses[]`, `reason` | 本机系统解析器对目标主机返回了多少 v4/v6 记录？ | 默认零发包（`NOT_OBSERVED`）；复用真实首跳的解析候选，显式 `--resolve` 可另查一次系统 DNS；默认 `addresses = []` 脱敏，仅 `--show-ip` 才展示本地解析结果 |
+| **2. `connection_edge`** | `status`, `observed_family`, `attempts[]`, `peer_address`, `reason` | 实际传输尝试的阶段、首包耗时、HTTP 状态与观察地址族是什么？ | 本次响应的 `remote_addr()` 提供 socket 对端。`--show-ip` 显示原始 IP，缺失时记录 `PEER_NOT_OBSERVED`。区分「尝试」与「实际已发 HTTP 请求（`request_sent`）」 |
 | **3. `http_egress`** | `status`, `observed_country`, `source`, `layer`, `reason` | 出口网络层（`EGRESS_NETWORK`）是否直接观察到了出口国家？ | **严格量纲隔离**：Gemini 页面内联三字码属于 `SERVICE_POLICY` 层，绝不填入 `http_egress` 列（此时该列保持 `NOT_OBSERVED / country = null`） |
 | **4. `address_family`** | `v4`, `v6`, `fallback`, `diagnostic` | IPv4 与 IPv6 各自的尝试状态、是否发生回落及双栈诊断结论是什么？ | 与服务地区结论完全解耦 |
 
@@ -76,3 +76,9 @@ parallaxe link explain --target google.home --resolve --show-ip
 1. `--fixture` 与 `--resolve` 严格互斥（同时传入直接返回退出码 `1`）；GUI 处于离线案例模式时自动禁用 DNS 查询按钮。
 2. `probe_resolver` 仅允许解析内置目录中已注册的主机，按主机名去重计数；**拒绝解析用户导入目标**（返回 `USER_TARGET_REQUIRES_SESSION_GRANT`）。
 3. 脱敏默认开启：未显式传 `--show-ip` 时，`resolver.addresses` 恒为空数组 `[]`，不泄露任何解析 IP。
+
+## 查看服务实际连接的地址
+
+`check --fixture address-mismatch --format md` 回放合成的美国解析、中国对端样本。`--fixture address-proxy` 演示代理节点。`--show-ip` 显示当次 socket IP 和参与建连的 DNS 候选。IP 比较覆盖全部候选，代理行显示 `PROXY_NOT_COMPARABLE`。`link explain --resolve` 的后续 DNS 查询单独计数。
+
+原生 CLI 的 `--address-book <file>` 接受本地 UTF-8 文本，每行 `CIDR,国家码,ASN`，支持 IPv4、IPv6、最长前缀匹配及 `#` 注释。用 `--expect-peer-country US` 比对直连对端的登记地区。缺少记录时国家码、ASN 留空。代理节点、HTTP 出口及产品地区分别读取各自的证据。地址异常进入 `risk_signal.markers`。JSON 的 `results[].destination` 与 CSV、HTML、Markdown 同源。agent 的 `export_report` 默认脱敏。

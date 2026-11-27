@@ -91,6 +91,7 @@ fn fixture_files_follow_contract_and_match_expectations() {
             true,
         );
         let outcome = FetchOutcome {
+            destination: Default::default(),
             status: sample.status,
             content_type: sample.content_type.clone(),
             location: sample.location.clone(),

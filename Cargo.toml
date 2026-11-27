@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["crates/core", "crates/cli", "crates/agent", "crates/gui"]
 
+[patch.crates-io]
+winit = { path = "vendor/winit" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

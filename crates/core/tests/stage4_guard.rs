@@ -12,6 +12,7 @@ use time::macros::date;
 fn result_for(registry: &Registry, id: &str, state: State) -> ResultRecord {
     let target = registry.get(id).expect("目标存在");
     ResultRecord {
+        destination: Default::default(),
         target: id.to_string(),
         state,
         reason: Some("SYNTHETIC_STAGE4".to_string()),
@@ -120,7 +121,7 @@ fn protected_candidates_are_rejected_before_closure() {
 }
 
 #[test]
-fn no_exclusivity_evidence_stops_at_no_safe_block() {
+fn shared_host_stops_at_dependency_conflict() {
     let registry = Registry::embedded().unwrap();
     let targets = vec!["google.gemini".to_string()];
     let results = vec![result_for(&registry, "google.gemini", State::Blocked)];
@@ -128,13 +129,13 @@ fn no_exclusivity_evidence_stops_at_no_safe_block() {
     let plan = &preview.plan;
 
     assert!(plan.closure_complete);
-    assert_eq!(plan.reasons, vec!["NO_SAFE_BLOCK".to_string()]);
-    assert_eq!(plan.primary_reason.as_deref(), Some("NO_SAFE_BLOCK"));
+    assert_eq!(plan.reasons, vec!["BLOCK_DEFERRED_DEPENDENCY_CONFLICT".to_string()]);
+    assert_eq!(plan.primary_reason.as_deref(), Some("BLOCK_DEFERRED_DEPENDENCY_CONFLICT"));
     assert!(!plan.safe_to_apply);
     assert!(plan
         .impact_closure
         .iter()
-        .any(|node| node.node == "host:gemini.google.com"));
+        .any(|node| node.node == "host:support.google.com"));
 }
 
 #[test]
@@ -148,6 +149,7 @@ fn user_imported_targets_are_hard_protected_and_cannot_be_guard_candidates() {
                 surface: Some("stage4-test".to_string()),
                 signals: vec!["rule.http".to_string()],
                 allow_insecure_http: false,
+                user_group: None,
             },
             true,
         )

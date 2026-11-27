@@ -1,5 +1,6 @@
 # 编译产物与生成物（不上传）
 /target/
+/target_old_*/
 **/target/
 **/*.rs.bk
 *.pdb
@@ -11,6 +12,10 @@ __pycache__/
 *.pyc
 
 # 测试/审计生成产物
+/dist/
+/dist-plugin-test/
+*.plugin
+*.plugin.sha256
 /tests/release-smoke/latest/
 /tests/release-smoke/*-pc-*/
 /tests/release-smoke/*-apple-*/
@@ -34,3 +39,6 @@ tests/fixtures/**/freshness-v1.json
 # 审计临时文件
 /_tree.json
 /_remote_*.json
+
+# Private, machine-specific live matrix harness
+/crates/core/tests/live_matrix_temp.rs

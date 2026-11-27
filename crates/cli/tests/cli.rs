@@ -22,6 +22,26 @@ fn run(args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
+fn build_info_reports_compile_time_distribution_marker() {
+    let (code, stdout, stderr) = run(&["build-info", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("纯 JSON");
+    assert_eq!(value["schema"], "parallaxe.build-info/v1");
+    assert_eq!(
+        value["distribution_release_build"],
+        cfg!(feature = "distribution-release")
+    );
+    assert_eq!(
+        value["marker"],
+        if cfg!(feature = "distribution-release") {
+            "parallaxe.distribution-release/v1"
+        } else {
+            "parallaxe.source-build/v1"
+        }
+    );
+}
+
+#[test]
 fn targets_list_is_read_only_and_lists_107_google_targets() {
     let (code, stdout, stderr) = run(&["targets", "list", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
@@ -63,11 +83,12 @@ fn empty_admission_check_selects_107_sends_nothing_and_exits_3() {
 }
 
 #[test]
-fn simple_profile_selects_15_and_also_exits_3() {
+fn simple_profile_selects_16_and_also_exits_3() {
     let (code, stdout, _) = run(&["check", "--headless", "--profile", "simple", "--json"]);
     assert_eq!(code, 3);
     let report: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(report["coverage"]["selected_count"], 15);
+    // simple 现含 google.one，共 16 项；源码构建默认零发包。
+    assert_eq!(report["coverage"]["selected_count"], 16);
     assert_eq!(report["network_request_count"], 0);
 }
 
@@ -365,7 +386,7 @@ impl Agent {
 }
 
 #[test]
-fn agent_supports_nine_actions_over_ndjson() {
+fn agent_supports_protocol_operations_over_ndjson() {
     let mut agent = Agent::start();
     let bad = agent.raw("{not json");
     assert_eq!(bad["id"], Value::Null, "坏行必须用 id:null 回包");
@@ -375,13 +396,13 @@ fn agent_supports_nine_actions_over_ndjson() {
     assert_eq!(bad["error"]["code"], "UNSUPPORTED_SCHEMA");
     let (response, events) = agent.request("1", "list_targets", serde_json::json!({}), 0);
     assert_eq!(response["ok"], true);
-    assert_eq!(response["data"]["protocol_version"], 1);
+    assert_eq!(response["data"]["protocol_version"], 2);
     assert_eq!(response["data"]["max_active_runs"], 1);
     assert_eq!(
         response["data"]["operations"]
             .as_array()
             .map(|items| items.len()),
-        Some(9)
+        Some(13)
     );
     assert!(events.is_empty());
 
@@ -396,13 +417,22 @@ fn agent_supports_nine_actions_over_ndjson() {
         response["data"]["selected_ids"]
             .as_array()
             .map(|items| items.len()),
-        Some(15)
+        Some(16)
     );
 
     let (response, events) = agent.request(
         "3",
         "check",
-        serde_json::json!({"profile": "google-all"}),
+        serde_json::json!({
+            "profile": "google-all",
+            "min_interval_ms": 4000,
+            "batch_size": 5,
+            "batch_cooldown_ms": 1000,
+            "node_retest": 0,
+            "plan": false,
+            "confirm_budget": false,
+            "node_sweep": false
+        }),
         4,
     );
     assert_eq!(response["ok"], true);
@@ -506,7 +536,7 @@ fn selectors_and_agent_errors_fail_closed() {
     assert_eq!(code, 3);
     assert_eq!(
         serde_json::from_str::<Value>(&text).unwrap()["coverage"]["selected_count"],
-        15
+        16
     );
     let mut agent = Agent::start();
     for (op, args) in [
@@ -582,7 +612,7 @@ fn link_explain_is_read_only_and_marks_untested_capabilities() {
     assert_eq!(value["capabilities"]["port_scan"], "PROHIBITED");
     assert_eq!(value["dns_query_count"], 0);
     assert_eq!(value["http_request_count"], 0);
-    assert_eq!(value["rows"].as_array().map(|items| items.len()), Some(15));
+    assert_eq!(value["rows"].as_array().map(|items| items.len()), Some(16));
     assert!(value["rows"]
         .as_array()
         .unwrap()
@@ -761,6 +791,36 @@ fn network_plan_preview_is_zero_packet_and_reports_budget() {
 }
 
 #[test]
+fn inter_target_interval_is_user_settable_and_capped() {
+    // 用户可设跨目标间隔（不同服务之间），零发包预览可见。
+    let (code, stdout, stderr) = run(&[
+        "check",
+        "--plan",
+        "--profile",
+        "google-all",
+        "--inter-target-interval-ms",
+        "4000",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("纯 JSON");
+    assert_eq!(value["inter_target_interval_ms"], 4_000);
+    assert_eq!(value["zero_packet"], true);
+
+    // 超出上限（10000）必须拒绝。
+    let (code2, _out2, _err2) = run(&[
+        "check",
+        "--plan",
+        "--profile",
+        "google-all",
+        "--inter-target-interval-ms",
+        "10001",
+        "--json",
+    ]);
+    assert_ne!(code2, 0, "超限应被拒绝");
+}
+
+#[test]
 fn md_and_txt_formats_work_with_locale() {
     let (code, stdout, stderr) = run(&[
         "--locale",
@@ -801,7 +861,7 @@ fn guard_export_refuses_when_no_candidate_and_requires_ack_for_full_mode() {
         "export",
         "--target",
         "google.gemini",
-        "--out",
+        "--out-dir",
         &dir_text,
         "--json",
     ]);
@@ -821,7 +881,7 @@ fn guard_export_refuses_when_no_candidate_and_requires_ack_for_full_mode() {
         "export",
         "--target",
         "google.gemini",
-        "--out",
+        "--out-dir",
         &dir_text,
         "--mode",
         "full",
@@ -831,24 +891,64 @@ fn guard_export_refuses_when_no_candidate_and_requires_ack_for_full_mode() {
 }
 
 #[test]
-fn system_block_dry_run_is_gated_and_prints_commands() {
-    let (code, stdout, stderr) = run(&[
-        "guard",
-        "block",
-        "--target",
-        "google.gemini",
-        "--ip",
-        "gemini.google.com=203.0.113.10",
-        "--rule-tag",
-        "test",
-    ]);
-    assert_eq!(code, 3, "stderr={stderr}");
-    assert!(stdout.contains("SYSBLOCK_NOT_SAFE"));
-    // 撤销只打印命令，不执行系统调用。
-    let (code, stdout, stderr) = run(&["guard", "unblock", "--rule-tag", "test"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(stdout.contains("parallaxe-block-test"));
-    assert!(stdout.contains("加 --apply"));
+fn beta_disables_system_writes_before_inputs_or_dns() {
+    let sandbox = tempfile::tempdir().unwrap();
+    for args in [
+        vec![
+            "guard",
+            "block",
+            "--resolve",
+            "--apply",
+            "--confirm",
+            "--source-report",
+            "missing.json",
+            "--audit-out",
+            "audit.json",
+            "--json",
+        ],
+        vec![
+            "guard",
+            "unblock",
+            "--rule-tag",
+            "test",
+            "--apply",
+            "--json",
+        ],
+    ] {
+        let output = Command::new(exe())
+            .args(args)
+            .current_dir(sandbox.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(doc["code"], "SYSBLOCK_BETA_DISABLED");
+        assert_eq!(doc["applied"], false);
+    }
+    assert_eq!(sandbox.path().read_dir().unwrap().count(), 0);
+    let (_, help, _) = run(&["guard", "--help"]);
+    assert!(help.contains("export") && help.contains("status"));
+    assert!(!help
+        .lines()
+        .any(|line| matches!(line.split_whitespace().next(), Some("block" | "unblock"))));
+}
+
+#[test]
+fn export_requires_explicit_folder_and_does_not_default_to_cwd() {
+    let sandbox = tempfile::tempdir().unwrap();
+    for extra in [&[][..], &["--out", "legacy"][..]] {
+        let output = Command::new(exe())
+            .args(["guard", "export"])
+            .args(extra)
+            .current_dir(sandbox.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        if extra.is_empty() {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("请显式指定导出文件夹"));
+        }
+        assert_eq!(sandbox.path().read_dir().unwrap().count(), 0);
+    }
 }
 
 #[test]

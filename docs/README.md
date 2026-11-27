@@ -28,10 +28,13 @@
 | 文档 | 说明 |
 |---|---|
 | [user-import.md](user-import.md) | 自定义检查网址与检查方式导入指南（F1–F5 规范、两段责任声明 `liability-v1`、一次性会话弹窗授权） |
+| [plugin-protocol.md](plugin-protocol.md) | 本地插件协议 `parallaxe.plugin/v1`：manifest 字段、唯一权限、页面组件集、CLI 启用/校验与沙箱边界 |
+| [../THIRD_PARTY_PLUGINS.md](../THIRD_PARTY_PLUGINS.md) | 插件来源与许可声明：随仓库分发的插件逐项登记 author/license/source/sha256（依赖库另见 `THIRD_PARTY_NOTICES.md`） |
 | [release-checklist.md](release-checklist.md) | 发行前合规 / 脱敏 / 权利清单与当前仓库实测核查记录 |
 | [cross-platform.md](cross-platform.md) | 阶段 7 三端（桌面 / Android / Web）与四层阻断能力说明、未验证项与待办 |
 | [packaging.md](packaging.md) | 六平台构建矩阵、单文件 `include_str!` 资产内嵌、外部覆盖层与校验和归档说明 |
 | [../README.md](../README.md) | 项目首页：大白话定位、快速入口、免责声明与总导航 |
+| [../CHANGELOG.md](../CHANGELOG.md) | 版本变更日志（首个测试版 `v0.1.0-beta.1`：功能、安全边界、未测项、版本口径） |
 | [../QUICKSTART.md](../QUICKSTART.md) | 5 分钟快速开始与常用命令速查 |
 | [../FAQ.md](../FAQ.md) | 常见问题与设计边界大白话解答 |
 | [../ARCHITECTURE.md](../ARCHITECTURE.md) | 开发者架构全景说明 |

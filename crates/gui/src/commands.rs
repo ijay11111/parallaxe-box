@@ -102,11 +102,11 @@ impl OfflineScenario {
 
     pub fn label(self) -> &'static str {
         match self {
-            OfflineScenario::DriveLoginHandoff => "① Drive 302 登录跳转 (UNKNOWN)",
-            OfflineScenario::BlockedAndConflictMix => "② 同层冲突 + BLOCKED 混合 (退出码 2)",
-            OfflineScenario::CaptchaChallenge => "③ 验证码挑战页 (CAPTCHA_CHALLENGE)",
-            OfflineScenario::MidRunCancelled => "④ 运行中途取消 (RunCancelled)",
-            OfflineScenario::BooksAndSharedCdnGuard => "⑤ Books / 共享 CDN Guard 预览",
+            OfflineScenario::DriveLoginHandoff => "① Drive 登录跳转（地区未知）",
+            OfflineScenario::BlockedAndConflictMix => "② 同层冲突与访问阻断混合",
+            OfflineScenario::CaptchaChallenge => "③ 遇到验证码挑战页",
+            OfflineScenario::MidRunCancelled => "④ 检测中途手动取消",
+            OfflineScenario::BooksAndSharedCdnGuard => "⑤ Books 与共享 CDN 误伤预演",
             OfflineScenario::Ipv6ThreeStates => "⑥ IPv6 三态链路诊断",
         }
     }
@@ -117,10 +117,15 @@ impl OfflineScenario {
 // T-7-09a 让 CheckOptions 增加了低噪声预算字段；命令枚举仅 UI 线程短暂持有。
 #[allow(clippy::large_enum_variant)]
 pub enum GuiCommand {
+    ConfigureAddresses(parallaxe_core::destination::AddressBook, Option<String>),
     /// 启动一次只读 `check`（含 simple / google-all / full / 自选 / 内置 fixture / 单项重测）。
-    RunCheck { options: CheckOptions },
+    RunCheck {
+        options: CheckOptions,
+    },
     /// 请求取消指定运行。
-    CancelRun { run_id: String },
+    CancelRun {
+        run_id: String,
+    },
     /// 请求对指定运行的结果生成只读 Guard 预览计划（`applied=false`）。
     RequestGuardPreview {
         source_run_id: String,
@@ -130,13 +135,21 @@ pub enum GuiCommand {
         is_fixture: bool,
     },
     /// 运行内置离线自检套件（不触网）。
-    RunSelftest { suite: Option<String> },
+    RunSelftest {
+        suite: Option<String>,
+    },
     /// 查询目标的静态目录解释与依赖边（只读，不发请求）。
-    ExplainStaticTarget { target_id: String },
+    ExplainStaticTarget {
+        target_id: String,
+    },
     /// 运行 6 类离线契约演示场景（通过 `parallaxe-core` 构造真实事件流，不触网）。
-    RunOfflineScenario { scenario: OfflineScenario },
+    RunOfflineScenario {
+        scenario: OfflineScenario,
+    },
     /// 运行用户已导入目标与检查方式的离线合成预览（零发包，保留 `origin=USER_IMPORTED` 审计留痕）。
-    RunUserOfflinePreview { target_ids: Vec<String> },
+    RunUserOfflinePreview {
+        target_ids: Vec<String>,
+    },
     /// 对当前选中目标执行可选只读系统 DNS 解析（调用 `parallaxe_core::linkcheck::probe_resolver`）。
     RunLinkResolve {
         target_ids: Vec<String>,
@@ -144,7 +157,9 @@ pub enum GuiCommand {
         show_ip: bool,
     },
     /// 同步 UI 线程更新后的 `Registry`（含用户运行时导入的目标、规则与一次性会话许可句柄）。
-    SyncRegistry { registry: Box<Registry> },
+    SyncRegistry {
+        registry: Box<Registry>,
+    },
     /// 关闭后台工作线程。
     Shutdown,
 }
@@ -178,6 +193,11 @@ pub enum WorkerMessage {
     },
     /// 链路体检只读 DNS 解析完成后的报告快照。
     LinkReportReady(Box<linkcheck::LinkReport>),
+    /// Local-only socket details, never included in serialized events or plugin hooks.
+    SocketDetails(
+        String,
+        Vec<(String, parallaxe_core::destination::Destination)>,
+    ),
     GuardAuditReady(Box<guard::GuardAudit>),
     /// run 之外的脱敏命令错误（例如非法参数）。
     CommandError(String),
@@ -318,8 +338,10 @@ async fn worker_loop(
         wake();
     };
 
+    let mut address_context = (parallaxe_core::destination::AddressBook::default(), None);
     while let Ok(command) = cmd_rx.recv() {
         match command {
+            GuiCommand::ConfigureAddresses(book, expected) => address_context = (book, expected),
             GuiCommand::Shutdown => break,
             GuiCommand::SyncRegistry { registry: updated } => {
                 registry = *updated;
@@ -351,7 +373,7 @@ async fn worker_loop(
             } => {
                 let now_str = parallaxe_core::state::format_time(time::OffsetDateTime::now_utc());
                 let mut report = match source_report {
-                    Some(rep) => linkcheck::analyze(&registry, &rep, now_str),
+                    Some(rep) => linkcheck::analyze_with_ip(&registry, &rep, now_str, show_ip),
                     None => linkcheck::analyze_selection(&registry, &target_ids, now_str),
                 };
                 match linkcheck::probe_resolver(&registry, &mut report, show_ip, 2_500).await {
@@ -380,8 +402,20 @@ async fn worker_loop(
                 let transport: Option<Arc<dyn Transport>> = if options.fixture.is_some() {
                     None
                 } else {
-                    match HttpTransport::new(options.proxy.clone(), None) {
-                        Ok(t) => Some(Arc::new(t) as Arc<dyn Transport>),
+                    let prep = match runtime::prepare_network(&registry, &options).await {
+                        Ok(prep) => prep,
+                        Err(err) => {
+                            send(WorkerMessage::CommandError(err.to_string()));
+                            continue;
+                        }
+                    };
+                    options.proxy_path = Some(prep.path_label);
+                    options.proxy_note = Some(prep.note);
+                    match HttpTransport::new(prep.default_proxy, None) {
+                        Ok(t) => Some(Arc::new(t.with_routes(prep.routes).with_address_context(
+                            address_context.0.clone(),
+                            address_context.1.clone(),
+                        )) as Arc<dyn Transport>),
                         Err(err) => {
                             send(WorkerMessage::CommandError(err));
                             continue;
@@ -408,8 +442,17 @@ async fn worker_loop(
                 )
                 .await;
                 let _ = forwarder.await;
-                if let Err(err) = result {
-                    send(WorkerMessage::CommandError(err.to_string()));
+                match result {
+                    Ok(output) => send(WorkerMessage::SocketDetails(
+                        output.report.run_id,
+                        output
+                            .report
+                            .results
+                            .into_iter()
+                            .map(|r| (r.target, r.destination))
+                            .collect(),
+                    )),
+                    Err(err) => send(WorkerMessage::CommandError(err.to_string())),
                 }
             }
             GuiCommand::RequestGuardPreview {
@@ -613,6 +656,7 @@ pub async fn build_offline_scenario_events(
                 true,
             );
             let outcome = FetchOutcome {
+                destination: Default::default(),
                 status: conflict_sample.status,
                 content_type: conflict_sample.content_type.clone(),
                 location: None,
@@ -650,6 +694,7 @@ pub async fn build_offline_scenario_events(
 
             // 2. google.books 模拟明确 BLOCKED（用于测试 2+3 混合退出码优先取 2）
             let books_result = ResultRecord {
+                destination: Default::default(),
                 target: books.raw.id.clone(),
                 state: State::Blocked,
                 reason: Some("POLICY_BLOCKED_FIXTURE".to_string()),
@@ -774,6 +819,7 @@ pub async fn build_offline_scenario_events(
                 true,
             );
             let outcome = FetchOutcome {
+                destination: Default::default(),
                 status: Some(302),
                 content_type: Some("text/html".to_string()),
                 location: captcha_sample.location.clone(),
@@ -869,6 +915,7 @@ pub async fn build_offline_scenario_events(
             };
             let eval = signals::evaluate(registry, gemini, &sample, &path.path_id, &now_str, true);
             let outcome = FetchOutcome {
+                destination: Default::default(),
                 status: Some(200),
                 content_type: sample.content_type.clone(),
                 location: None,
@@ -950,6 +997,7 @@ pub async fn build_offline_scenario_events(
             let path = Path::system("path-fixture-guard");
             let now_str = parallaxe_core::state::format_time(now);
             let books_result = ResultRecord {
+                destination: Default::default(),
                 target: books.raw.id.clone(),
                 state: State::Restricted,
                 reason: Some("REGION_RESTRICTED_FIXTURE".to_string()),
@@ -1117,6 +1165,7 @@ pub async fn build_offline_scenario_events(
                 let eval =
                     signals::evaluate(registry, target, &sample, &path.path_id, &now_str, true);
                 let outcome = FetchOutcome {
+                    destination: Default::default(),
                     status: Some(status),
                     content_type: sample.content_type.clone(),
                     location: None,

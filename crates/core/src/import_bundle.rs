@@ -17,11 +17,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{LIABILITY_CONSENT_VERSION, ORIGIN_USER_IMPORTED};
 use crate::targets::{
-    ConfigError, Registry, Rule, UserRuleMeta, UserTargetImportInput, UserTargetMeta,
+    normalize_user_group, ConfigError, Registry, Rule, UserRuleMeta, UserTargetImportInput,
+    UserTargetMeta, DEFAULT_USER_GROUP,
 };
 
 /// 统一导入包 schema 版本。
 pub const IMPORT_BUNDLE_SCHEMA: &str = "parallaxe.import/v1";
+/// 发行包内预置的默认规则包（编译期嵌入；用户无需自己找 zip）。
+pub const EMBEDDED_DEFAULT_RULES_BUNDLE: &[u8] =
+    include_bytes!("../../../assets/bundled/default-rules-v2.zip");
 /// ZIP 单包大小上限（10 MiB）。
 pub const MAX_ZIP_BYTES: u64 = 10 * 1024 * 1024;
 /// ZIP 解压后总字节上限（50 MiB，含流式解压硬截断防炸弹）。
@@ -56,7 +60,7 @@ impl ImportSource {
     }
 }
 
-/// 导入包内的单个目标条目（绑定专属 `signals` 为一等公民）。
+/// 导入包内的单个目标条目（绑定专属 `signals` 为一等公民，支持可选用户自建分组）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportTargetEntry {
     #[serde(default)]
@@ -68,6 +72,13 @@ pub struct ImportTargetEntry {
     pub signals: Vec<String>,
     #[serde(default)]
     pub allow_insecure_http: bool,
+    /// 可选用户自主分组名（默认归入"我的导入"；独立于 google/control；仅影响展示与筛选）。
+    #[serde(default, alias = "group")]
+    pub user_group: Option<String>,
+    /// 当网址与内置目录（或已有用户目标）重复时，是否允许"更换"。
+    /// 默认 `false`（保持硬拒绝）；批量预览中由用户逐条确认后置 `true`。
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 /// 导入包责任声明留痕记录。
@@ -150,10 +161,17 @@ pub struct BundleTargetPreviewRow {
     pub planned_id: String,
     pub url: String,
     pub surface: String,
+    pub user_group: String,
     /// `(rule_id, is_new_in_bundle)`
     pub bound_signals: Vec<(String, bool)>,
     pub valid: bool,
     pub error: Option<String>,
+    /// 与目录中已有目标重复时，记录冲突目标 ID（内置或用户目标）。
+    pub duplicate_of: Option<String>,
+    /// 冲突目标是内置受保护目标（批量更换需二次明确确认）。
+    pub duplicate_protected: bool,
+    /// 冲突目标是此前导入的用户目标。
+    pub duplicate_is_user: bool,
 }
 
 /// 统一导入前只读预览结果（不修改真实 `Registry`）。
@@ -238,16 +256,28 @@ fn reject_forbidden_json_keys(val: &serde_json::Value, path: &str) -> Result<(),
 /// 解析纯文本 / Markdown / CSV 导入内容为统一 `ImportBundle`。
 ///
 /// 支持格式：
-/// - 竖线分隔（首选）：`URL [| 规则ID1,规则ID2] [| ID] [| 表面说明]`
-/// - 兼容旧版顺序：`自定义ID | URL [| 规则ID1,规则ID2] [| 表面说明]`
-/// - Markdown 表格行：`| URL | 规则ID1,规则ID2 | ID | 表面说明 |`（自动跳过表头与 `|---|` 分隔行）
+/// - 分组标题行：`[分组名]` 或 `分组：分组名` / `group: 分组名`（作用于后续未单独指定分组的条目）
+/// - 竖线分隔（首选）：`URL [| 规则ID1,规则ID2] [| ID] [| 表面说明] [| 分组名]`
+/// - `组名 | URL [| 规则ID1,规则ID2] [| 表面说明]`（当首列以 `@` 开头或含中文/空格时视为分组名）
+/// - 兼容旧版顺序：`自定义ID | URL [| 规则ID1,规则ID2] [| 表面说明] [| 分组名]`
+/// - Markdown 表格行：`| URL | 规则ID1,规则ID2 | ID | 表面说明 | 分组名 |`（自动跳过表头与 `|---|` 分隔行）
 /// - Markdown 代码块围栏（`` ``` ``）与 `#` 注释行自动忽略
-/// - CSV 行：`URL,规则ID1;规则ID2,ID,表面说明`（当不含 `|` 且首列为 `http(s)://` 时）
+/// - CSV 行：`URL,规则ID1;规则ID2,ID,表面说明,分组名`（当不含 `|` 且首列为 `http(s)://` 时）
 /// - 若某行省略规则，采用 `default_signals`；若默认也为空，则绑定 `rule.http`（仅连通性状态码检查）。
 pub fn parse_import_text(
     text: &str,
     default_signals: &[String],
     allow_insecure_http: bool,
+) -> Result<ImportBundle, ConfigError> {
+    parse_import_text_with_default_group(text, default_signals, allow_insecure_http, None)
+}
+
+/// 同 `parse_import_text`，并可指定未显式声明分组时的默认用户分组名。
+pub fn parse_import_text_with_default_group(
+    text: &str,
+    default_signals: &[String],
+    allow_insecure_http: bool,
+    default_group: Option<&str>,
 ) -> Result<ImportBundle, ConfigError> {
     let mut bundle = ImportBundle::new(ImportSource::TextFile);
     let fallback_signals: Vec<String> = if default_signals.is_empty() {
@@ -255,6 +285,10 @@ pub fn parse_import_text(
     } else {
         default_signals.to_vec()
     };
+    let mut current_group: Option<String> = default_group
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     for (line_idx, raw_line) in text.lines().enumerate() {
         let trimmed = raw_line.trim();
@@ -264,6 +298,11 @@ pub fn parse_import_text(
             || trimmed.starts_with("---")
             || trimmed.starts_with(">")
         {
+            continue;
+        }
+        // 支持 `[分组名]`、`分组：分组名`、`group: 分组名` 独立分组指令行
+        if let Some(section_group) = parse_group_header_line(trimmed) {
+            current_group = Some(section_group);
             continue;
         }
         // 去掉 Markdown 表格首尾 `|` 并跳过分隔线（如 `| --- | --- |`）或纯表头行
@@ -283,7 +322,7 @@ pub fn parse_import_text(
             .to_ascii_lowercase();
         if matches!(
             lower_first.as_str(),
-            "url" | "网址" | "目标网址" | "target" | "目标"
+            "url" | "网址" | "目标网址" | "target" | "目标" | "group" | "分组" | "组名"
         ) {
             continue;
         }
@@ -292,6 +331,7 @@ pub fn parse_import_text(
             cleaned,
             &fallback_signals,
             allow_insecure_http,
+            current_group.as_deref(),
             line_idx + 1,
         )?;
         bundle.targets.push(entry);
@@ -300,16 +340,41 @@ pub fn parse_import_text(
     if bundle.targets.is_empty() {
         return Err(ConfigError::field(
             "text",
-            "未解析到任何有效网址条目（格式：URL | 规则ID1,规则ID2 | 自定义ID | 表面说明）",
+            "未解析到任何有效网址条目（格式：URL | 规则1,规则2 | 名称 | 说明 | 分组）",
         ));
     }
     Ok(bundle)
+}
+
+fn parse_group_header_line(trimmed: &str) -> Option<String> {
+    if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let name = inner.trim();
+        if !name.is_empty() && !name.contains("http://") && !name.contains("https://") {
+            return Some(name.to_string());
+        }
+    }
+    for prefix in ["group:", "GROUP:", "分组:", "分组：", "组名:", "组名："] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn looks_like_ascii_target_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 fn parse_single_text_line(
     line: &str,
     fallback_signals: &[String],
     allow_insecure_http: bool,
+    current_group: Option<&str>,
     line_no: usize,
 ) -> Result<ImportTargetEntry, ConfigError> {
     let parts: Vec<String> = if line.contains('|') {
@@ -325,30 +390,47 @@ fn parse_single_text_line(
         low.starts_with("https://") || low.starts_with("http://")
     };
 
-    let (url, raw_rules, id, surface) = if looks_like_url(&parts[0]) {
-        // 标准格式：URL [| rules] [| id] [| surface]
+    let (url, raw_rules, id, surface, explicit_group) = if looks_like_url(&parts[0]) {
+        // 标准格式：URL [| rules] [| id] [| surface] [| user_group]
         let url = parts[0].clone();
         let raw_rules = parts.get(1).cloned().unwrap_or_default();
         let id = parts.get(2).cloned().filter(|s| !s.is_empty());
         let surface = parts.get(3).cloned().filter(|s| !s.is_empty());
-        (url, raw_rules, id, surface)
+        let group = parts.get(4).cloned().filter(|s| !s.is_empty());
+        (url, raw_rules, id, surface, group)
     } else if parts.len() >= 2 && looks_like_url(&parts[1]) {
-        // 兼容旧版：ID | URL [| rules] [| surface]
-        let id = Some(parts[0].clone()).filter(|s| !s.is_empty());
-        let url = parts[1].clone();
-        let raw_rules = parts.get(2).cloned().unwrap_or_default();
-        let surface = parts.get(3).cloned().filter(|s| !s.is_empty());
-        (url, raw_rules, id, surface)
+        // 首列在 URL 之前：支持 `@组名 | URL` 或中文/含空格 `组名 | URL`，兼容旧版 ASCII `ID | URL`
+        let col0 = parts[0].as_str();
+        let is_group_prefix =
+            col0.starts_with('@') || (!col0.is_empty() && !looks_like_ascii_target_id(col0));
+        if is_group_prefix {
+            let group_name = col0.trim_start_matches('@').trim().to_string();
+            let group = (!group_name.is_empty()).then_some(group_name);
+            let url = parts[1].clone();
+            let raw_rules = parts.get(2).cloned().unwrap_or_default();
+            let surface = parts.get(3).cloned().filter(|s| !s.is_empty());
+            let id = parts.get(4).cloned().filter(|s| !s.is_empty());
+            (url, raw_rules, id, surface, group)
+        } else {
+            // 兼容旧版：ID | URL [| rules] [| surface] [| user_group]
+            let id = Some(parts[0].clone()).filter(|s| !s.is_empty());
+            let url = parts[1].clone();
+            let raw_rules = parts.get(2).cloned().unwrap_or_default();
+            let surface = parts.get(3).cloned().filter(|s| !s.is_empty());
+            let group = parts.get(4).cloned().filter(|s| !s.is_empty());
+            (url, raw_rules, id, surface, group)
+        }
     } else {
         // 仍保留原样交给核心 URL 校验器报精确错误（供预览表标红展示）
         let url = parts[0].clone();
         let raw_rules = parts.get(1).cloned().unwrap_or_default();
         let id = parts.get(2).cloned().filter(|s| !s.is_empty());
         let surface = parts.get(3).cloned().filter(|s| !s.is_empty());
+        let group = parts.get(4).cloned().filter(|s| !s.is_empty());
         if url.is_empty() {
             return Err(ConfigError::field(format!("第 {line_no} 行"), "网址列为空"));
         }
-        (url, raw_rules, id, surface)
+        (url, raw_rules, id, surface, group)
     };
 
     let signals: Vec<String> = if raw_rules.trim().is_empty() {
@@ -367,12 +449,16 @@ fn parse_single_text_line(
         }
     };
 
+    let user_group = explicit_group.or_else(|| current_group.map(str::to_string));
+
     Ok(ImportTargetEntry {
         id,
         url,
         surface,
         signals,
         allow_insecure_http,
+        user_group,
+        replace_existing: false,
     })
 }
 
@@ -525,6 +611,9 @@ pub fn parse_import_zip_bytes(bytes: &[u8]) -> Result<ImportBundle, ConfigError>
     }
 
     // 可选 targets.json / targets.txt / targets.md / targets.csv
+    // 同一导入包同时提供多种目标文件时，`targets.json` 为权威格式，
+    // 不再把 txt/md/csv 的同一批目标重复追加（避免 107 条变 214 条）。
+    let mut json_targets_loaded = false;
     if let Some(tjson_path) = files_by_role.get("targets.json") {
         let text = std::fs::read_to_string(tjson_path)
             .map_err(|e| ConfigError::Parse(format!("读取 targets.json 失败：{e}")))?;
@@ -544,16 +633,32 @@ pub fn parse_import_zip_bytes(bytes: &[u8]) -> Result<ImportBundle, ConfigError>
             ));
         };
         bundle.targets.extend(list);
+        json_targets_loaded = true;
     }
 
-    for text_key in ["targets.txt", "targets.md", "targets.csv"] {
-        if let Some(tpath) = files_by_role.get(text_key) {
-            let text = std::fs::read_to_string(tpath)
-                .map_err(|e| ConfigError::Parse(format!("读取 {text_key} 失败：{e}")))?;
-            let sub = parse_import_text(&text, &[], false)?;
-            bundle.targets.extend(sub.targets);
+    if !json_targets_loaded {
+        for text_key in ["targets.txt", "targets.md", "targets.csv"] {
+            if let Some(tpath) = files_by_role.get(text_key) {
+                let text = std::fs::read_to_string(tpath)
+                    .map_err(|e| ConfigError::Parse(format!("读取 {text_key} 失败：{e}")))?;
+                let sub = parse_import_text(&text, &[], false)?;
+                bundle.targets.extend(sub.targets);
+            }
         }
     }
+
+    // 最终防御：同 ID 或同 URL 只保留首次出现（顺序稳定），绝不静默重复导入。
+    let mut seen_ids: BTreeSet<String> = BTreeSet::new();
+    let mut seen_urls: BTreeSet<String> = BTreeSet::new();
+    bundle.targets.retain(|entry| {
+        let id_ok = entry
+            .id
+            .as_deref()
+            .map(|id| seen_ids.insert(id.trim().to_string()))
+            .unwrap_or(true);
+        let url_ok = seen_urls.insert(entry.url.trim().to_string());
+        id_ok && url_ok
+    });
 
     // 可选 README.md（只读展示，不执行）
     if let Some(readme_path) = files_by_role.get("readme.md") {
@@ -569,6 +674,11 @@ pub fn parse_import_zip_bytes(bytes: &[u8]) -> Result<ImportBundle, ConfigError>
         ));
     }
     Ok(bundle)
+}
+
+/// 解析发行包内预置的默认规则包（编译期嵌入，零外部文件依赖）。
+pub fn bundled_default_rules_bundle() -> Result<ImportBundle, ConfigError> {
+    parse_import_zip_bytes(EMBEDDED_DEFAULT_RULES_BUNDLE)
 }
 
 #[derive(Deserialize)]
@@ -969,26 +1079,51 @@ impl Registry {
                 surface: item.surface.clone(),
                 signals: item.signals.clone(),
                 allow_insecure_http: item.allow_insecure_http,
+                user_group: item.user_group.clone(),
             };
             let bound_signals: Vec<(String, bool)> = item
                 .signals
                 .iter()
                 .map(|sig| (sig.clone(), new_rule_ids.contains(sig)))
                 .collect();
-            match staging.import_user_target(input, true) {
+            // 只读判定：同 URL 是否已在目录（内置或用户目标）中。
+            let normalized = staging
+                .entries()
+                .iter()
+                .find(|entry| entry.raw.url.trim() == item.url.trim())
+                .map(|entry| entry.id().to_string());
+            let duplicate_protected = normalized
+                .as_deref()
+                .is_some_and(|id| staging.get(id).is_some_and(|entry| entry.raw.protected));
+            let duplicate_is_user = normalized
+                .as_deref()
+                .is_some_and(|id| staging.is_user_imported(id));
+            let replace_for_preview = item.replace_existing || normalized.is_some();
+            match staging.import_user_target_replacing(input, true, replace_for_preview) {
                 Ok(meta) => {
                     target_rows.push(BundleTargetPreviewRow {
                         index: idx + 1,
                         planned_id: meta.id,
                         url: meta.url,
                         surface: meta.surface,
+                        user_group: meta.user_group,
                         bound_signals,
                         valid: true,
                         error: None,
+                        duplicate_of: normalized,
+                        duplicate_protected,
+                        duplicate_is_user,
                     });
                 }
                 Err(err) => {
                     all_valid = false;
+                    let fallback_group = normalize_user_group(item.user_group.as_deref())
+                        .unwrap_or_else(|_| {
+                            item.user_group
+                                .clone()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| DEFAULT_USER_GROUP.to_string())
+                        });
                     target_rows.push(BundleTargetPreviewRow {
                         index: idx + 1,
                         planned_id: item.id.clone().unwrap_or_else(|| "(自动生成)".to_string()),
@@ -997,9 +1132,13 @@ impl Registry {
                             .surface
                             .clone()
                             .unwrap_or_else(|| "用户自定义导入表面".to_string()),
+                        user_group: fallback_group,
                         bound_signals,
                         valid: false,
                         error: Some(err.to_string()),
+                        duplicate_of: normalized,
+                        duplicate_protected,
+                        duplicate_is_user,
                     });
                 }
             }
@@ -1076,15 +1215,17 @@ impl Registry {
         let mut imported_targets = Vec::with_capacity(bundle.targets.len());
         for (idx, entry) in bundle.targets.iter().enumerate() {
             let meta = staging
-                .import_user_target(
+                .import_user_target_replacing(
                     UserTargetImportInput {
                         id: entry.id.clone(),
                         url: entry.url.clone(),
                         surface: entry.surface.clone(),
                         signals: entry.signals.clone(),
                         allow_insecure_http: entry.allow_insecure_http,
+                        user_group: entry.user_group.clone(),
                     },
                     target_consent,
+                    entry.replace_existing,
                 )
                 .map_err(|err| {
                     ConfigError::field(format!("bundle.targets[{idx}]"), err.to_string())

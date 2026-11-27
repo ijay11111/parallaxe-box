@@ -75,9 +75,6 @@ Parallaxe box 的硬规则是：
 | `simple` | `parallaxe check --headless`（默认） | 9 个核心 Google + 6 个对照目标 | 15 | 20 s | 10 s | 4 / 2 | 日常快速排障 |
 | `google-all` | `parallaxe check --headless --profile google-all` | 全部 `google.*` 命名空间 | 107 | 120 s | 12 s | 6 / 2 | Google 全服务专项诊断 |
 | `full` | `parallaxe check --headless --full` | 全部内置目标（不含用户导入 `user.*`） | 135 | 120 s | 12 s | 6 / 2 | 换线后的全量覆盖体检 |
-| `business` | `parallaxe check --headless --profile business` | `google.workspace` + `identity` + `cloud` + `control.developer` | 35 | 60 s | 10 s | 4 / 1 | 跨境办公与云开发场景 |
-| `study` | `parallaxe check --headless --profile study` | Books、Scholar、NotebookLM、Classroom、Colab、Edu Meet | 6 | 30 s | 10 s | 3 / 1 | 留学与学术研究场景 |
-| `media` | `parallaxe check --headless --profile media` | `google.media` + `google.store` + `control.media` | 22 | 45 s | 10 s | 4 / 1 | 媒体与商店公开面观察 |
 
 > 注意：`--profile`、`--group`、`--target`、`--full` 四种选择器严格互斥；未指定任何选择器时默认走隐式 `simple`（`implicit_default = true`，额外要求目标 `safe_default = true`）。
 

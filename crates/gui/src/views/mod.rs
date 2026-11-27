@@ -1,6 +1,10 @@
 //! GUI 视图组件集（纯只读渲染层，三维度正交重构版）。
 
+pub mod ai_debug_panel;
+pub mod check_panel;
 pub mod coverage_panel;
+pub mod default_bundle_panel;
+pub mod distribution_mode_panel;
 pub mod explain_drawer;
 pub mod guard_panel;
 pub mod import_panel;
@@ -8,6 +12,9 @@ pub mod overview_minimal;
 pub mod overview_normal;
 pub mod plan;
 pub mod service_matrix;
+pub mod settings_page;
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+pub mod settings_plugins;
 pub mod target_tree;
 pub mod timeline_view;
 pub mod top_bar;
@@ -38,6 +45,15 @@ pub enum UiAction {
     RunSelftest,
     RunUserImportOfflinePreview(Vec<String>),
     RunLinkResolve(Vec<String>),
+    /// 运行「我的授权版」独立范围（默认规则包更换后的 user.* 目标）。
+    RunAuthorizedBundledTargets,
+    /// 确认默认规则包专属授权（批量更换 + 仅本次/永久）。
+    ConfirmDefaultBundleAuth {
+        permanent: bool,
+        indices: Vec<usize>,
+    },
+    /// 撤销默认规则包永久授权并恢复零发包基线。
+    RevokeDefaultBundleAuth,
     SyncRegistry,
     CancelActiveRun,
     RequestGuardPreview {
@@ -62,6 +78,22 @@ pub enum UiAction {
     ExportPreview(ExportFormat),
     ExportToFile(ExportFormat, PathBuf),
     ClearFilters,
+    SetAiAutonomous(bool),
+    /// 源码构建请求开启发行包模式；仅打开强制确认框，不直接提权。
+    RequestDistributionModeEnable,
+    /// 用户在强制确认框明确同意后开启发行包模式。
+    ConfirmDistributionModeEnable,
+    /// 关闭源码构建的发行包模式，恢复零发包。
+    DisableDistributionMode,
+    AiSelfDisableAutonomous,
+    OpenAiF3AuthModal,
+    ApproveAiF3Auth,
+    RejectAiF3Auth,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    OpenPluginPage {
+        plugin_id: String,
+        page_id: String,
+    },
 }
 
 /// 格式化单条资格说明文本：若当前语言包缺失该 `summary_key`，安全回退到中文并显式附注缺失 key（不 panic）。
@@ -108,7 +140,7 @@ pub fn eligibility_badge_button(
         .fill(fill)
         .stroke(Stroke::new(1.0_f32, border.gamma_multiply(0.75)))
         .rounding(Rounding::same(RADIUS_PILL))
-        .inner_margin(Margin::symmetric(SPACE_2, 2.0));
+        .inner_margin(Margin::symmetric(SPACE_2, SPACE_1));
     let inner = frame.show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -127,12 +159,13 @@ pub fn eligibility_badge_button(
     resp.on_hover_text(translate(locale, "gui.eligibility.fixed_notice", &[]))
 }
 
-/// 渲染展开后的只读资格说明列表（逐条显示摘要 + 可点击官方帮助链接 + `verified=false` 标记 + 固定免责说明）。
+/// 渲染展开后的只读资格说明列表（逐条显示摘要 + 可点击官方帮助链接 + 固定免责说明；`verified=` 仅在技术细节模式或悬停提示展示）。
 pub fn render_eligibility_notes_panel(
     ui: &mut Ui,
     notes: &[EligibilityNote],
     locale: Locale,
     p: Palette,
+    show_tech: bool,
 ) {
     if notes.is_empty() {
         return;
@@ -154,6 +187,14 @@ pub fn render_eligibility_notes_panel(
                 p.card,
                 p.border,
             );
+            if show_tech {
+                ui.label(
+                    RichText::new("verified=false")
+                        .monospace()
+                        .size(FONT_META)
+                        .color(p.text_muted),
+                );
+            }
         });
         ui.add_space(SPACE_1);
         ui.label(
@@ -167,7 +208,7 @@ pub fn render_eligibility_notes_panel(
                 ui.add_space(SPACE_1);
             }
             subtle_well_frame(p)
-                .inner_margin(Margin::symmetric(SPACE_2, SPACE_1 + 2.0))
+                .inner_margin(Margin::symmetric(SPACE_2, SPACE_2))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(
@@ -176,7 +217,7 @@ pub fn render_eligibility_notes_panel(
                             .color(p.text_primary),
                     );
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(SPACE_2, 2.0);
+                        ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
                         ui.hyperlink_to(
                             RichText::new(format!(
                                 "{}  ({})",
@@ -187,12 +228,14 @@ pub fn render_eligibility_notes_panel(
                             .color(p.accent),
                             &note.source_url,
                         );
-                        ui.label(
-                            RichText::new(format!("verified={}", note.verified))
-                                .monospace()
-                                .size(FONT_META)
-                                .color(p.text_muted),
-                        );
+                        if show_tech {
+                            ui.label(
+                                RichText::new(format!("verified={}", note.verified))
+                                    .monospace()
+                                    .size(FONT_META)
+                                    .color(p.text_muted),
+                            );
+                        }
                     });
                 });
         }

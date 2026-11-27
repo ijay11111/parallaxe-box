@@ -187,3 +187,17 @@ summary_key = "eligibility.gate.static_no_gate"
 source_url = "https://cloud.google.com/cdn/docs/overview"
 families = ["static"]
 targets = ["google.gstatic", "google.ggpht", "google.ssl-gstatic", "google.lh3", "google.usercontent", "google.fonts"]
+
+[[notes]]
+id = "gate.api-available-regions"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.api_available_regions"
+source_url = "https://ai.google.dev/gemini-api/docs/available-regions"
+targets = ["google.studio", "google.models", "google.gen-api"]
+
+[[notes]]
+id = "gate.gemini-available-regions"
+category = "ENTITLEMENT_GATE"
+summary_key = "eligibility.gate.gemini_available_regions"
+source_url = "https://support.google.com/gemini/answer/13575153"
+targets = ["google.gemini"]

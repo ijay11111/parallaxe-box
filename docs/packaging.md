@@ -13,7 +13,10 @@
 [features]
 default = ["gui"]
 gui = ["dep:parallaxe-gui"]
+distribution-release = ["parallaxe-core/distribution-release", "parallaxe-agent/distribution-release", "parallaxe-gui?/distribution-release"]
 ```
+
+> `distribution-release` 是**编译期分发标记**，不等于 Cargo 的 `--release` profile。普通 `cargo build` / `cargo build --release` 都不带该 feature，保持源码零发包；只有正式发行流水线显式传 `--features distribution-release`。
 
 | 形态 | 构建命令 | 包含能力 | 典型适用场景 |
 |---|---|---|---|
@@ -58,22 +61,27 @@ TLS 底层固定使用 `rustls`（`reqwest` 已禁用默认特性，不依赖系
 ```bash
 # Windows MSVC 静态 CRT（PowerShell）
 $env:RUSTFLAGS = "-C target-feature=+crt-static"
-cargo build --release --locked -p parallaxe-cli --target x86_64-pc-windows-msvc
-cargo build --release --locked -p parallaxe-cli --no-default-features --target x86_64-pc-windows-msvc
+# 正式发行产物：显式带 distribution-release
+cargo build --release --locked -p parallaxe-cli --target x86_64-pc-windows-msvc --features distribution-release
+cargo build --release --locked -p parallaxe-cli --no-default-features --target x86_64-pc-windows-msvc --features distribution-release
 
 # Linux musl 纯无头全静态
-cargo build --release --locked -p parallaxe-cli --no-default-features --target x86_64-unknown-linux-musl
+cargo build --release --locked -p parallaxe-cli --no-default-features --target x86_64-unknown-linux-musl --features distribution-release
 
 # macOS（Intel / Apple Silicon）
-cargo build --release --locked -p parallaxe-cli --target aarch64-apple-darwin
-cargo build --release --locked -p parallaxe-cli --target x86_64-apple-darwin
+cargo build --release --locked -p parallaxe-cli --target aarch64-apple-darwin --features distribution-release
+cargo build --release --locked -p parallaxe-cli --target x86_64-apple-darwin --features distribution-release
+
+# Web / Android
+trunk build --offline --locked --features distribution-release
+cargo ndk -t x86_64 -t arm64-v8a build -p parallaxe-gui --offline --locked -j 4 --features distribution-release
 ```
 
 ---
 
 ## 3. 单文件 `include_str!` 资产内嵌与外部覆盖层
 
-### 3.1 编译期内嵌的 8 份只读资产
+### 3.1 编译期内嵌的 9 份只读资产
 
 `crates/core/src/targets.rs`、`i18n.rs` 与 `eligibility.rs` 在编译期将以下 8 份文件直接嵌入二进制，确保用户把单个 `parallaxe` 可执行文件复制到任意空目录即可完整运行（离线自检、目录查询、Fixture 演练、Guard 闭包预览、链路体检、资格提示与中英语言包全部可用）：
 
@@ -85,6 +93,7 @@ cargo build --release --locked -p parallaxe-cli --target x86_64-apple-darwin
 6. `assets/eligibility-notes.toml`（静态资格说明：访问可达 ≠ 订阅可用；不参与判定）
 7. `assets/i18n/zh-CN.toml`（默认中文语言包）
 8. `assets/i18n/en-US.toml`（英文语言包；法律文本暂为待确认 stub）
+9. `assets/bundled/default-rules-v2.zip`（107 项「我的授权版」默认规则包；安装启动即可见，无需手动导入）
 
 ### 3.2 外部覆盖层目录用法与防提权规则
 
@@ -112,9 +121,10 @@ parallaxe \
 
 **允许进入源码发行 / 二进制归档的内容（白名单）**：
 - 二进制产物：`parallaxe` / `parallaxe.exe`（分别区分完整版与 `-headless` 无头版）
-- 根目录法律与说明文档：`README.md`、`QUICKSTART.md`、`FAQ.md`、`ARCHITECTURE.md`、`THIRD_PARTY_NOTICES.md`
-- 体系化交付文档：`docs/`（12 篇核心文档 + `README.md` + `user-import.md` + `release-checklist.md` + `packaging.md`）
-- 源码发行额外包含：`Cargo.toml`、`Cargo.lock`、`crates/`、`assets/`、`tests/fixtures/`
+- 根目录法律与说明文档：`README.md`、`QUICKSTART.md`、`FAQ.md`、`ARCHITECTURE.md`、`THIRD_PARTY_NOTICES.md`、`THIRD_PARTY_PLUGINS.md`
+- 体系化交付文档：`docs/`（12 篇核心文档 + `README.md` + `user-import.md` + `plugin-protocol.md` + `release-checklist.md` + `packaging.md`）
+- 插件示例：`plugins/samples/`（仅 `manifest.json` 与 `README.md`；不启用时不加载、不执行，可整目录删除）
+- 源码发行额外包含：`Cargo.toml`、`Cargo.lock`、`crates/`、`assets/`（含第一方应用图标 `assets/icons/`）、`packaging/android/app/src/main/res/`、`tests/fixtures/`
 
 **绝对禁止进入任何发行归档的内容（黑名单）**：
 - `sessions/`（原始历史实战会话记录）
@@ -127,15 +137,22 @@ parallaxe \
 ### 4.2 建议归档命名与 SHA-256 校验和
 
 ```text
-parallaxe-box-v0.1.0-x86_64-pc-windows-msvc.zip
-parallaxe-box-v0.1.0-x86_64-pc-windows-msvc-headless.zip
-parallaxe-box-v0.1.0-aarch64-pc-windows-msvc.zip
-parallaxe-box-v0.1.0-x86_64-apple-darwin.tar.gz
-parallaxe-box-v0.1.0-aarch64-apple-darwin.tar.gz
-parallaxe-box-v0.1.0-x86_64-unknown-linux-musl-headless.tar.gz
-parallaxe-box-v0.1.0-aarch64-unknown-linux-musl-headless.tar.gz
+parallaxe-box-v0.1.0-beta.1-x86_64-pc-windows-msvc.zip
+parallaxe-box-v0.1.0-beta.1-x86_64-pc-windows-msvc-headless.zip
+parallaxe-box-v0.1.0-beta.1-aarch64-pc-windows-msvc.zip
+parallaxe-box-v0.1.0-beta.1-x86_64-apple-darwin.tar.gz
+parallaxe-box-v0.1.0-beta.1-aarch64-apple-darwin.tar.gz
+parallaxe-box-v0.1.0-beta.1-x86_64-unknown-linux-musl-headless.tar.gz
+parallaxe-box-v0.1.0-beta.1-aarch64-unknown-linux-musl-headless.tar.gz
+parallaxe-box-v0.1.0-beta.1-web.zip
+parallaxe-box-v0.1.0-beta.1-android-x86_64.apk
+parallaxe-box-v0.1.0-beta.1-android-arm64-v8a.apk
 SHA256SUMS.txt
 ```
+
+> 版本口径：归档名与 Release 标签用 `v0.1.0-beta.1`；二进制内部 `--version` 仍为 `0.1.0`
+> （workspace 版本未改，报告 schema `parallaxe.report/v1` 不变），两者不矛盾，见 `CHANGELOG.md`。
+> 发布归档由构建者放在仓库外（如 `_release/`），不以文件名形式进入 git（`.gitignore` 已排除 `*.exe`、`dist/`、`*.plugin`）。
 
 生成校验和示例：
 
@@ -158,6 +175,7 @@ shasum -a 256 parallaxe-box-v0.1.0-*.tar.gz > SHA256SUMS.txt
 每个发行归档解压到全新空白目录后，至少在断网环境下验证：
 1. `parallaxe --version` 正常输出版本号；
 2. `parallaxe selftest --offline` 输出 `28 passed / 0 failed`，退出码 `0`；
-3. `parallaxe check --headless --profile google-all --json` 输出选中 `107`、发包 `0`、退出码 `3`；
+3. 源码构建：`parallaxe check --headless --profile google-all --json` 输出选中 `107`、发包 `0`、退出码 `3`；发行构建：改用 `check --headless --plan --profile google-all --json`，断言 `target_count=107`、`zero_packet=true`；
 4. `parallaxe check --headless --fixture gemini-positive --json` 输出 `OK`、退出码 `0`、`network_request_count = 0`；
-5. 归档内包含 `README.md` 与 `THIRD_PARTY_NOTICES.md`，且不含任何黑名单目录或真实公网 IP / 凭据。
+5. 归档内包含 `README.md`、`THIRD_PARTY_NOTICES.md` 与 `assets/bundled/default-rules-v2.zip`，且不含任何黑名单目录或真实公网 IP / 凭据；
+6. `python tools/verify_release.py --release-dir <发行目录> --expect distribution` 校验所有二进制成员带 `parallaxe.distribution-release/v1`，并复核 `SHA256SUMS.txt`。

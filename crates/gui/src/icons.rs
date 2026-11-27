@@ -26,6 +26,8 @@ pub enum IconKind {
     Close,
     Check,
     Info,
+    Plugin,
+    Spark,
 }
 
 /// 在给定矩形中绘制矢量图标。
@@ -291,6 +293,31 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, kind: IconKind, color: Co
                 [pos2(c.x, c.y - r * 0.1), pos2(c.x, c.y + r * 0.48)],
                 stroke,
             );
+        }
+        IconKind::Spark => {
+            // 四角星（AI/智能）+ 右侧小点
+            let star = vec![
+                pos2(c.x - r * 0.15, c.y - r),
+                pos2(c.x + r * 0.18, c.y - r * 0.18),
+                pos2(c.x + r * 0.95, c.y + r * 0.05),
+                pos2(c.x + r * 0.18, c.y + r * 0.28),
+                pos2(c.x - r * 0.05, c.y + r * 0.95),
+                pos2(c.x - r * 0.32, c.y + r * 0.28),
+                pos2(c.x - r * 0.95, c.y + r * 0.02),
+                pos2(c.x - r * 0.32, c.y - r * 0.2),
+            ];
+            painter.add(egui::Shape::closed_line(star, stroke));
+            painter.circle_filled(pos2(c.x + r * 0.62, c.y - r * 0.62), r * 0.12, color);
+        }
+        IconKind::Plugin => {
+            // 模块/插件图标：主方块 + 顶部/右侧接口凸点
+            let body = Rect::from_min_max(
+                pos2(c.x - r * 0.72, c.y - r * 0.42),
+                pos2(c.x + r * 0.42, c.y + r * 0.72),
+            );
+            painter.rect_stroke(body, Rounding::same(2.0), stroke);
+            painter.circle_stroke(pos2(c.x - r * 0.15, c.y - r * 0.68), r * 0.24, stroke);
+            painter.circle_stroke(pos2(c.x + r * 0.68, c.y + r * 0.15), r * 0.24, stroke);
         }
     }
 }

@@ -1,14 +1,13 @@
-//! 统一导入逻辑（T-5-07 · `parallaxe.import/v1`）：
-//! 将「自定义网址」与「自定义检查方式」统一为同一导入包（Import Bundle），
-//! 提供三种入口（手动配置 / 文本文件 txt·md·csv / ZIP 导入包）+ 统一预览表 + 动态双层责任声明 + F3 一次性授权弹窗。
-//!
-//! 红线：
-//! - 所有导入目标默认 `allow_online=false`、`safe_default=false`、`origin=USER_IMPORTED`，未获 F3 确认前绝对零发包；
-//! - 责任声明按包内容动态强制：含目标必勾网址声明，含规则必额外勾更严格的检查方式声明；
-//! - 原子导入：预览表逐项实时校验，导入时任一条目失败整体回滚。
+//! 统一导入页（自定义网址、用户自定义分组与检查方式）：
+//! - 三入口（手动配置 / 文本导入 / ZIP 导入包）位于卡片输入区正上方，窄屏横向等宽排布（>= 100px），绝不竖排逐字折行；
+//! - 支持用户自定义分组（默认「我的导入」，与 Google / 对照内置分组完全隔离，仅用于展示与筛选）；
+//! - 桌面端接入原生系统文件选择器（文本文件 / ZIP 包），移动端直给粘贴文本框与诚实指引；
+//! - 默认视角隐藏 `origin=USER_IMPORTED` / `rule. 开头` / `9 种 Reader` / `pattern(防 ReDoS)` 等底层术语，
+//!   完整保留核定中文责任声明原文与 F3 一次性会话授权闸门。
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use egui::{vec2, Align, Layout, Margin, RichText, Rounding, ScrollArea, Stroke, Ui};
 use parallaxe_core::contracts::{
@@ -17,11 +16,15 @@ use parallaxe_core::contracts::{
 };
 use parallaxe_core::i18n::{translate, Locale};
 use parallaxe_core::import_bundle::{
-    build_stored_zip_bytes, parse_import_text, parse_import_zip_bytes, read_import_text_file,
-    read_import_zip, ImportBundle, ImportSource, ImportTargetEntry, IMPORT_BUNDLE_SCHEMA,
+    build_stored_zip_bytes, parse_import_text_with_default_group, parse_import_zip_bytes,
+    read_import_text_file, read_import_zip, BundleTargetPreviewRow, ImportBundle, ImportSource,
+    ImportTargetEntry, IMPORT_BUNDLE_SCHEMA,
 };
-use parallaxe_core::targets::{Extractor, InspectionCategory, Registry, Rule};
+use parallaxe_core::targets::{
+    normalize_user_group, Extractor, InspectionCategory, Registry, Rule, DEFAULT_USER_GROUP,
+};
 
+use crate::folder_picker::{pick_import_file, ImportFileFilter};
 use crate::icons::{icon_tile, IconKind};
 use crate::layout::ViewportTier;
 use crate::theme::{
@@ -31,6 +34,10 @@ use crate::theme::{
     SPACE_4, SPACE_5,
 };
 use crate::views::UiAction;
+
+/// 测试可注入的文件选择器回调类型。
+pub type ImportFilePickerFn =
+    Arc<dyn Fn(&str, ImportFileFilter) -> Result<Option<PathBuf>, String> + Send + Sync>;
 
 /// 统一导入页顶部三入口模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +58,15 @@ impl ImportEntryTab {
         translate(locale, key, &[])
     }
 
+    pub fn tip(self, locale: Locale) -> String {
+        let key = match self {
+            ImportEntryTab::Manual => "gui.import.tab.manual_tip",
+            ImportEntryTab::TextFile => "gui.import.tab.text_tip",
+            ImportEntryTab::ZipBundle => "gui.import.tab.zip_tip",
+        };
+        translate(locale, key, &[])
+    }
+
     pub const ALL: [ImportEntryTab; 3] = [
         ImportEntryTab::Manual,
         ImportEntryTab::TextFile,
@@ -60,14 +76,24 @@ impl ImportEntryTab {
 
 /// 统一导入界面的持久交互状态。
 pub struct ImportViewState {
-    /// 当前选择的导入入口（手动 / 文本文件 / ZIP 导入包）。
+    /// 当前选择的导入入口（手动配置 / 文本导入 / ZIP 导入包）。
     pub entry_tab: ImportEntryTab,
 
     /// 责任声明勾选状态（按当前 bundle 内容动态生效）。
     pub target_consent_checked: bool,
     pub rule_consent_checked: bool,
 
-    // --- 入口 1：手动配置表单（支持逐网址独立绑定检查方式，并可随包附加自定义规则） ---
+    // --- 问题 2：用户自定义分组 ---
+    /// 当前新导入条目默认归属的分组名（默认「我的导入」）。
+    pub selected_group: String,
+    /// 新建分组输入框。
+    pub new_group_input: String,
+    /// 用户在本会话内创建的分组列表（始终包含默认组「我的导入」）。
+    pub custom_groups: Vec<String>,
+    /// 已登记清单的分组筛选（`None` 表示全部）。
+    pub inventory_group_filter: Option<String>,
+
+    // --- 入口 1：手动配置表单 ---
     pub single_url_input: String,
     pub single_id_input: String,
     pub surface_input: String,
@@ -84,7 +110,7 @@ pub struct ImportViewState {
     pub rule_channel: String,
     pub rule_notes_input: String,
 
-    // --- 入口 2：文本文件导入（txt / md / csv） ---
+    // --- 入口 2：文本导入 ---
     pub text_file_path: String,
     pub text_editor_content: String,
     pub text_allow_insecure_http: bool,
@@ -96,6 +122,9 @@ pub struct ImportViewState {
     pub zip_loaded_bundle: Option<ImportBundle>,
     pub zip_parse_error: Option<String>,
 
+    /// 测试注入的本地文件选择器回调（`None` 时走系统原生对话框）。
+    pub file_picker_override: Option<ImportFilePickerFn>,
+
     /// 用户态规则保存目录（不写回内置 assets/）。
     pub user_state_dir_input: String,
 
@@ -105,38 +134,56 @@ pub struct ImportViewState {
 
     /// 最近一次导入或授权操作反馈（`Ok(成功信息)` / `Err(错误提示)`）。
     pub feedback: Option<Result<String, String>>,
+
+    /// 用户在预览表中显式勾选"更换"的重复网址行（1-based，与 `ImportBundle.targets` 顺序一致）。
+    pub replace_targets: BTreeSet<usize>,
 }
 
-const SAMPLE_TEXT_LINES: &str = "# 格式：URL | 规则ID1,规则ID2 | 自定义ID | 表面说明\n\
-https://edge-a.example.com/cdn-cgi/trace | rule.http,rule.trace | edge-a | 出口 Trace 与状态码\n\
-https://edge-b.example.com/books | rule.http,rule.inline3 | edge-b | 内联三字地区码检查\n\
-https://edge-c.example.com/status | rule.http | edge-c | 仅连通性状态码检查";
+const SAMPLE_TEXT_LINES: &str = concat!(
+    "# 支持按 [分组名] 或「分组名 | 网址」归类，也支持每行直接粘贴网址\n",
+    "[日常自测]\n",
+    "https://edge-a.example.com/cdn-cgi/trace | rule.http,rule.trace | edge-a | 出口与连通性\n",
+    "https://edge-b.example.com/books | rule.http,rule.inline3 | edge-b | 页面地区码检查\n",
+    "[办公专线]\n",
+    "https://edge-c.example.com/status | rule.http | edge-c | 状态码连通性检查",
+);
 
 impl Default for ImportViewState {
     fn default() -> Self {
         let mut selected_signals = BTreeSet::new();
         selected_signals.insert("rule.trace".to_string());
         selected_signals.insert("rule.http".to_string());
-        let initial_text_bundle = parse_import_text(SAMPLE_TEXT_LINES, &[], false).ok();
+        let default_group = DEFAULT_USER_GROUP.to_string();
+        let initial_text_bundle = parse_import_text_with_default_group(
+            SAMPLE_TEXT_LINES,
+            &[],
+            false,
+            Some(&default_group),
+        )
+        .ok();
         Self {
             entry_tab: ImportEntryTab::Manual,
             target_consent_checked: false,
             rule_consent_checked: false,
+            selected_group: default_group.clone(),
+            new_group_input: String::new(),
+            custom_groups: vec![default_group],
+            inventory_group_filter: None,
             single_url_input: "https://icanhazip.example.com/cdn-cgi/trace".to_string(),
-            single_id_input: "user.custom-trace".to_string(),
-            surface_input: "用户自定义出口与可达性表面".to_string(),
+            single_id_input: "custom-trace".to_string(),
+            surface_input: "自定义出口与连通性".to_string(),
             allow_insecure_http: false,
             selected_signals,
             manual_targets: Vec::new(),
             manual_rules: Vec::new(),
             show_inline_rule_editor: false,
-            rule_id_input: "rule.user-region-code".to_string(),
+            rule_id_input: "user-region-code".to_string(),
             rule_category: InspectionCategory::BodyRegex,
             rule_pattern_input: "\"country_code\":\"([A-Z]{2})\"".to_string(),
             rule_capture_input: "1".to_string(),
             rule_layer: Layer::ServicePolicy,
             rule_channel: "SERVICE".to_string(),
-            rule_notes_input: "提取页面内联两字母国家码（用户自定义规则）".to_string(),
+            rule_notes_input: "提取页面中的两字母地区码".to_string(),
             text_file_path: String::new(),
             text_editor_content: SAMPLE_TEXT_LINES.to_string(),
             text_allow_insecure_http: false,
@@ -145,15 +192,111 @@ impl Default for ImportViewState {
             zip_file_path: String::new(),
             zip_loaded_bundle: None,
             zip_parse_error: None,
+            file_picker_override: None,
             user_state_dir_input: "user-custom-state".to_string(),
             online_confirm_open: false,
             online_run_confirmed_checkbox: false,
             feedback: None,
+            replace_targets: BTreeSet::new(),
         }
     }
 }
 
 impl ImportViewState {
+    /// 返回所有可选用户分组（始终包含默认组 + 会话新建组 + 目录已登记组，保持去重有序）。
+    pub fn all_groups(&self, registry: &Registry) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut push = |g: &str| {
+            if seen.insert(g.to_string()) {
+                out.push(g.to_string());
+            }
+        };
+        push(DEFAULT_USER_GROUP);
+        for g in &self.custom_groups {
+            push(g);
+        }
+        for g in registry.user_groups() {
+            push(&g);
+        }
+        out
+    }
+
+    /// 创建并选中一个用户自定义分组（拒绝与内置 google / control 命名空间冲突）。
+    pub fn create_and_select_group(&mut self, raw_name: &str) -> Result<String, String> {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() {
+            return Err("请输入分组名称".to_string());
+        }
+        let normalized = normalize_user_group(Some(trimmed)).map_err(|e| e.to_string())?;
+        if !self.custom_groups.iter().any(|g| g == &normalized) {
+            self.custom_groups.push(normalized.clone());
+        }
+        self.selected_group = normalized.clone();
+        self.new_group_input.clear();
+        Ok(normalized)
+    }
+
+    /// 调用文件选择器（优先使用测试注入回调，否则使用平台原生文件对话框）。
+    fn pick_file(&self, prompt: &str, filter: ImportFileFilter) -> Result<Option<PathBuf>, String> {
+        if let Some(cb) = &self.file_picker_override {
+            cb(prompt, filter)
+        } else {
+            pick_import_file(prompt, filter)
+        }
+    }
+
+    /// 立即载入并解析文本文件。
+    pub fn load_text_file(&mut self, path: &Path) {
+        self.text_file_path = path.display().to_string();
+        self.replace_targets.clear();
+        match read_import_text_file(path, &[], self.text_allow_insecure_http) {
+            Ok(mut bundle) => {
+                if let Ok(raw) = std::fs::read_to_string(path) {
+                    self.text_editor_content = raw;
+                    if let Ok(re_parsed) = parse_import_text_with_default_group(
+                        &self.text_editor_content,
+                        &[],
+                        self.text_allow_insecure_http,
+                        Some(&self.selected_group),
+                    ) {
+                        bundle = re_parsed;
+                    }
+                }
+                self.text_loaded_bundle = Some(bundle);
+                self.text_parse_error = None;
+                self.feedback = Some(Ok(format!(
+                    "已读取并解析文件 {}，请在预览区核对分组与检查方式。",
+                    path.display()
+                )));
+            }
+            Err(err) => {
+                self.text_parse_error = Some(err.to_string());
+                self.text_loaded_bundle = None;
+            }
+        }
+    }
+
+    /// 立即载入并解包 ZIP 文件。
+    pub fn load_zip_file(&mut self, path: &Path) {
+        self.zip_file_path = path.display().to_string();
+        self.replace_targets.clear();
+        match read_import_zip(path) {
+            Ok(bundle) => {
+                self.zip_loaded_bundle = Some(bundle);
+                self.zip_parse_error = None;
+                self.feedback = Some(Ok(format!(
+                    "已安全解包并解析 {}，请在预览区核对后导入。",
+                    path.display()
+                )));
+            }
+            Err(err) => {
+                self.zip_loaded_bundle = None;
+                self.zip_parse_error = Some(err.to_string());
+            }
+        }
+    }
+
     /// 根据当前选中的入口 Tab，构造待预览/待导入的统一 `ImportBundle`。
     fn active_bundle(&self) -> Option<ImportBundle> {
         match self.entry_tab {
@@ -176,10 +319,15 @@ impl ImportViewState {
                                 .then(|| self.surface_input.trim().to_string()),
                             signals,
                             allow_insecure_http: self.allow_insecure_http,
+                            user_group: Some(self.selected_group.clone()),
+                            replace_existing: self.replace_targets.contains(&1),
                         });
                     }
                 } else {
                     bundle.targets = self.manual_targets.clone();
+                    for (idx, entry) in bundle.targets.iter_mut().enumerate() {
+                        entry.replace_existing = self.replace_targets.contains(&(idx + 1));
+                    }
                 }
                 if bundle.targets.is_empty() && bundle.rules.is_empty() {
                     None
@@ -187,12 +335,22 @@ impl ImportViewState {
                     Some(bundle)
                 }
             }
-            ImportEntryTab::TextFile => self.text_loaded_bundle.clone(),
-            ImportEntryTab::ZipBundle => self.zip_loaded_bundle.clone(),
+            ImportEntryTab::TextFile => self.text_loaded_bundle.clone().map(|mut bundle| {
+                for (idx, entry) in bundle.targets.iter_mut().enumerate() {
+                    entry.replace_existing = self.replace_targets.contains(&(idx + 1));
+                }
+                bundle
+            }),
+            ImportEntryTab::ZipBundle => self.zip_loaded_bundle.clone().map(|mut bundle| {
+                for (idx, entry) in bundle.targets.iter_mut().enumerate() {
+                    entry.replace_existing = self.replace_targets.contains(&(idx + 1));
+                }
+                bundle
+            }),
         }
     }
 
-    fn load_sample_zip_bundle(&mut self) {
+    pub fn load_sample_zip_bundle(&mut self) {
         let manifest =
             format!(r#"{{"schema":"{IMPORT_BUNDLE_SCHEMA}","source":"ZIP_BUNDLE","targets":[]}}"#);
         let rules_toml = r#"[[rules]]
@@ -203,15 +361,16 @@ layer = "SERVICE_POLICY"
 channel = "SERVICE"
 credibility = "LOW"
 source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
-notes = "示例 ZIP 包随带自定义地区提取规则"
+notes = "示例导入包附带的地区码检查方式"
 negative_case = "未命中时仅记缺失，不推断国家"
 extract = { kind = "regex", pattern = "region=([A-Z]{2})", capture = "1" }
 applies_to = []
 "#;
-        let targets_txt = "# ZIP 包内目标列表（可同时引用包内新增规则与内置规则）\n\
+        let targets_txt = "# ZIP 包内目标列表（可按分组归类并绑定检查方式）\n\
+[示例分组]\n\
 https://zip-edge-a.example.com/api | rule.zip-sample-region,rule.http | zip-edge-a | 绑定包内新增规则\n\
-https://zip-edge-b.example.com/trace | rule.trace,rule.http | zip-edge-b | 绑定内置 Trace 规则\n";
-        let readme = "示例导入包说明：包含 1 条自定义正则规则（rule.zip-sample-region）与 2 个自定义目标网址。README 仅作只读展示，不执行任何脚本。";
+https://zip-edge-b.example.com/trace | rule.trace,rule.http | zip-edge-b | 绑定内置出口规则\n";
+        let readme = "示例导入包说明：包含 1 条自定义检查规则与 2 个自定义目标网址。说明文档仅作只读展示，不执行任何脚本。";
 
         let bytes = build_stored_zip_bytes(&[
             ("sample-bundle/manifest.json", manifest.as_bytes()),
@@ -224,7 +383,7 @@ https://zip-edge-b.example.com/trace | rule.trace,rule.http | zip-edge-b | 绑�
                 self.zip_loaded_bundle = Some(bundle);
                 self.zip_parse_error = None;
                 self.feedback = Some(Ok(
-                    "已载入内置示例 ZIP 导入包（含 2 个网址 + 1 条包内规则），请在下方预览表核对后勾选声明并导入。"
+                    "已载入内置示例 ZIP 导入包（含 2 个网址与 1 条自定义检查方式），请核对预览后勾选声明并导入。"
                         .to_string(),
                 ));
             }
@@ -235,7 +394,50 @@ https://zip-edge-b.example.com/trace | rule.trace,rule.http | zip-edge-b | 绑�
     }
 }
 
-/// 渲染统一导入包主视图（三入口 + 实时预览表 + 动态责任声明 + 一次性授权弹窗）。
+/// 将内置规则 ID 转换为通俗中文名称（悬停或在技术细节模式下仍可看原始规则 ID）。
+fn friendly_signal_label(sig: &str, show_tech: bool) -> String {
+    let plain = match sig {
+        "rule.http" => "HTTP 状态码",
+        "rule.trace" => "IP 出口",
+        "rule.inline3" => "三字地区码",
+        "rule.header" => "响应头地区",
+        "rule.redirect" => "重定向地址",
+        "rule.title" => "页面标题",
+        "rule.deny" => "限制提示词",
+        "rule.html" => "页面正文匹配",
+        "rule.json" => "接口字段",
+        other => return other.strip_prefix("rule.").unwrap_or(other).to_string(),
+    };
+    if show_tech {
+        format!("{plain} ({sig})")
+    } else {
+        plain.to_string()
+    }
+}
+
+/// 将底层 extractor kind 转换为通俗中文说明。
+fn friendly_reader_kind(kind: &str, show_tech: bool) -> String {
+    let plain = match kind {
+        "status_code" => "状态码检查",
+        "trace_kv" => "出口键值对",
+        "header" => "响应头读取",
+        "redirect_location" => "跳转目标",
+        "html_title" => "网页标题",
+        "regex" => "正文正则匹配",
+        "json_path" => "JSON 字段",
+        "contains" => "关键词包含",
+        "deny_marker" => "限制标记",
+        other => other,
+    };
+    if show_tech {
+        format!("{plain} [{kind}]")
+    } else {
+        plain.to_string()
+    }
+}
+
+/// 渲染统一导入包主视图（三入口顶置 + 用户分组 + 实时分组预览 + 动态责任声明 + 一次性授权弹窗）。
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     ui: &mut Ui,
     registry: &mut Registry,
@@ -243,21 +445,24 @@ pub fn render(
     theme: ThemeMode,
     locale: Locale,
     tier: ViewportTier,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     let p = Palette::for_theme(theme);
+    let is_narrow = tier == ViewportTier::Narrow;
+    let very_narrow = ui.ctx().screen_rect().width() < 380.0;
 
-    // 1. 顶部已登记资产与 F3 授权闸门卡（紧凑单带，留出充足首屏空间）
-    render_gate_header_card(ui, registry, view, locale, p, actions);
-    ui.add_space(SPACE_3);
+    // 1. 顶部已登记资产与一次性在线授权闸门卡（移动端空态压缩为单行提示带，把首屏让给三入口与输入框）
+    render_gate_header_card(ui, registry, view, locale, p, tier, show_tech, actions);
+    ui.add_space(if is_narrow { SPACE_2 } else { SPACE_3 });
 
-    // F3 模态二次确认弹窗
+    // 一次性在线检查模态确认弹窗
     if view.online_confirm_open {
         let ctx = ui.ctx().clone();
-        render_online_session_confirm_modal(&ctx, registry, view, p, actions);
+        render_online_session_confirm_modal(&ctx, registry, view, p, show_tech, actions);
     }
 
-    // 紧凑操作反馈条
+    // 操作反馈条
     if let Some(outcome) = &view.feedback {
         let (bg, fg, ic, prefix) = match outcome {
             Ok(_) => (p.ok_bg, p.ok_fg, IconKind::Check, "操作成功："),
@@ -270,135 +475,135 @@ pub fn render(
             .fill(bg)
             .stroke(Stroke::new(1.0_f32, fg.gamma_multiply(0.7)))
             .rounding(Rounding::same(RADIUS_MD))
-            .inner_margin(Margin::symmetric(SPACE_3, SPACE_1))
+            .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     crate::icons::icon(ui, ic, 14.0, fg);
-                    ui.label(
-                        RichText::new(format!("{prefix}{text}"))
-                            .size(FONT_META)
-                            .strong()
-                            .color(fg),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{prefix}{text}"))
+                                .size(FONT_META)
+                                .strong()
+                                .color(fg),
+                        )
+                        .wrap(),
                     );
                 });
             });
-        ui.add_space(SPACE_2);
+        ui.add_space(SPACE_3);
     }
 
-    // 2. 统一导入包主工作卡片：三入口切换 + 输入区 + 统一预览表 + 动态责任声明 + 单一主按钮
+    // 2. 导入主卡片：标题独占一行 -> 三入口水平标签栏独占一行（绝不被标题挤成右侧窄条）-> 输入区与预览
+    let card_h_pad = if very_narrow {
+        SPACE_2
+    } else if is_narrow {
+        SPACE_3
+    } else {
+        SPACE_4
+    };
     card_frame(p)
-        .inner_margin(Margin::symmetric(SPACE_4, SPACE_3))
+        .inner_margin(Margin::symmetric(card_h_pad, SPACE_3))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            // 标题 + 三入口分段条并排（宽屏同一行，窄屏自动折行），显著压缩纵向占用
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+            // 行 1：卡片标题（独占全宽，绝不与三入口 Tab 争抢同一行宽度）
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACE_2;
                 icon_tile(ui, IconKind::Globe, 24.0, p.accent, p.accent_soft);
-                ui.label(
-                    RichText::new(translate(locale, "gui.import.bundle.title", &[]))
-                        .size(FONT_TITLE)
-                        .strong()
-                        .color(p.text_primary),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(translate(locale, "gui.import.bundle.title", &[]))
+                            .size(FONT_TITLE)
+                            .strong()
+                            .color(p.text_primary),
+                    )
+                    .wrap(),
                 );
-                ui.add_space(SPACE_2);
-                egui::Frame::none()
-                    .fill(p.sidebar)
-                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
-                    .rounding(Rounding::same(RADIUS_MD))
-                    .inner_margin(Margin::same(3.0))
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            for tab in ImportEntryTab::ALL {
-                                let active = view.entry_tab == tab;
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new(tab.label(locale))
-                                                .size(FONT_META)
-                                                .strong()
-                                                .color(if active {
-                                                    p.accent
-                                                } else {
-                                                    p.text_secondary
-                                                }),
-                                        )
-                                        .fill(if active {
-                                            p.card
-                                        } else {
-                                            egui::Color32::TRANSPARENT
-                                        })
-                                        .stroke(if active {
-                                            Stroke::new(1.0_f32, p.border)
-                                        } else {
-                                            Stroke::NONE
-                                        })
-                                        .rounding(Rounding::same(RADIUS_SM))
-                                        .min_size(vec2(0.0, 26.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    view.entry_tab = tab;
-                                }
-                            }
-                        });
-                    });
             });
 
             ui.add_space(SPACE_2);
+
+            // 行 2：三入口水平 Tab 栏（位于输入区正上方，每项 >= 100px，超长省略 + 悬停提示，零逐字折行）
+            render_entry_tab_bar(ui, view, locale, p, is_narrow);
+
+            ui.add_space(SPACE_2);
+
             let active_bundle = view.active_bundle();
             let preview_opt = active_bundle
                 .as_ref()
                 .map(|b| registry.preview_import_bundle(b));
 
-            // 宽屏左右双栏（左：输入配置 | 右：统一实时预览表），窄屏上下堆叠；确保 1280×820 首屏免滚即可完整看到预览+责任声明+导入主按钮
-            if tier != ViewportTier::Narrow && ui.available_width() >= 820.0 {
-                spaced_columns(ui, 2, SPACE_3, |col_ui, idx| {
+            // 桌面宽屏双栏（左输入 / 右分组预览）；移动窄屏单列上下堆叠（输入紧跟 Tab 正下方）
+            if !is_narrow && ui.available_width() >= 820.0 {
+                spaced_columns(ui, 2, SPACE_4, |col_ui, idx| {
                     if idx == 0 {
                         match view.entry_tab {
-                            ImportEntryTab::Manual => {
-                                render_manual_entry(col_ui, registry, view, p, ViewportTier::Narrow)
+                            ImportEntryTab::Manual => render_manual_entry(
+                                col_ui, registry, view, locale, p, false, show_tech,
+                            ),
+                            ImportEntryTab::TextFile => {
+                                render_text_file_entry(col_ui, registry, view, locale, p, false)
                             }
-                            ImportEntryTab::TextFile => render_text_file_entry(col_ui, view, p),
-                            ImportEntryTab::ZipBundle => render_zip_bundle_entry(col_ui, view, p),
+                            ImportEntryTab::ZipBundle => {
+                                render_zip_bundle_entry(col_ui, view, locale, p)
+                            }
                         }
                     } else if let (Some(bundle), Some(preview)) = (&active_bundle, &preview_opt) {
                         render_unified_preview_table(
                             col_ui,
+                            view,
                             preview,
                             bundle.readme.as_deref(),
                             locale,
                             p,
+                            show_tech,
                         );
                     } else {
                         subtle_well_frame(p).show(col_ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(
-                                RichText::new("请先在左侧填写网址、解析文本文件或载入 ZIP 导入包，解析完成后此处将展示逐行预览与校验状态。")
-                                    .size(FONT_BODY)
-                                    .color(p.text_secondary),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new("请在左侧填写网址、粘贴文本或选择本地导入包，解析后将按分组展示预览与校验状态。")
+                                        .size(FONT_BODY)
+                                        .color(p.text_secondary),
+                                )
+                                .wrap(),
                             );
                         });
                     }
                 });
             } else {
                 match view.entry_tab {
-                    ImportEntryTab::Manual => render_manual_entry(ui, registry, view, p, tier),
-                    ImportEntryTab::TextFile => render_text_file_entry(ui, view, p),
-                    ImportEntryTab::ZipBundle => render_zip_bundle_entry(ui, view, p),
+                    ImportEntryTab::Manual => {
+                        render_manual_entry(ui, registry, view, locale, p, true, show_tech)
+                    }
+                    ImportEntryTab::TextFile => {
+                        render_text_file_entry(ui, registry, view, locale, p, true)
+                    }
+                    ImportEntryTab::ZipBundle => render_zip_bundle_entry(ui, view, locale, p),
                 }
                 ui.add_space(SPACE_3);
                 if let (Some(bundle), Some(preview)) = (&active_bundle, &preview_opt) {
-                    render_unified_preview_table(ui, preview, bundle.readme.as_deref(), locale, p);
+                    render_unified_preview_table(
+                        ui,
+                        view,
+                        preview,
+                        bundle.readme.as_deref(),
+                        locale,
+                        p,
+                        show_tech,
+                    );
                 } else {
                     subtle_well_frame(p).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(
-                            RichText::new("请先在上方填写网址、解析文本文件或载入 ZIP 导入包，解析完成后此处将展示逐行预览与校验状态。")
-                                .size(FONT_BODY)
-                                .color(p.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("请在上方填写网址、粘贴文本或载入导入包，解析后将按分组展示预览与校验状态。")
+                                    .size(FONT_BODY)
+                                    .color(p.text_secondary),
+                            )
+                            .wrap(),
                         );
                     });
                 }
@@ -406,92 +611,254 @@ pub fn render(
 
             if let (Some(bundle), Some(preview)) = (&active_bundle, &preview_opt) {
                 ui.add_space(SPACE_2);
-                // 4. 动态两层责任声明 + 单一主导入按钮（全宽展示在双栏正下方，首屏立即可见）
                 render_dynamic_consent_and_submit(
-                    ui, registry, view, bundle, preview, locale, p, actions,
+                    ui, registry, view, bundle, preview, locale, p, show_tech, actions,
                 );
             }
         });
 
     ui.add_space(SPACE_4);
-    render_imported_inventory_card(ui, registry, view, p, actions);
+    render_imported_inventory_card(ui, registry, view, locale, p, show_tech, actions);
 }
 
+/// 独立一行的三入口横向 Tab 栏（移动端等宽 >= 100px、高 44px；桌面自适应 >= 112px、高 36px）。
+fn render_entry_tab_bar(
+    ui: &mut Ui,
+    view: &mut ImportViewState,
+    locale: Locale,
+    p: Palette,
+    is_narrow: bool,
+) {
+    let outer_w = if is_narrow {
+        ui.available_width()
+    } else {
+        ui.available_width().min(540.0)
+    };
+    let tab_h = if is_narrow { 44.0 } else { 36.0 };
+    let gap = SPACE_1;
+    let inner_avail = (outer_w - SPACE_2).max(120.0);
+    let equal_w = ((inner_avail - gap * 2.0) / 3.0).floor();
+
+    egui::Frame::none()
+        .fill(p.sidebar)
+        .stroke(Stroke::new(1.0_f32, p.border_subtle))
+        .rounding(Rounding::same(RADIUS_MD))
+        .inner_margin(Margin::same(SPACE_1))
+        .show(ui, |ui| {
+            ui.set_width(inner_avail);
+            if equal_w >= 88.0 {
+                // 严格水平单行排布，3 个 Tab 等宽且超长省略 + 悬停提示，绝不逐字折行或掉到第二行
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for tab in ImportEntryTab::ALL {
+                        let active = view.entry_tab == tab;
+                        let lbl = tab.label(locale);
+                        let tip = tab.tip(locale);
+                        let resp = ui
+                            .add_sized(
+                                [equal_w, tab_h],
+                                egui::Button::new(
+                                    RichText::new(&lbl)
+                                        .size(FONT_BODY)
+                                        .strong()
+                                        .color(if active { p.accent } else { p.text_secondary }),
+                                )
+                                .fill(if active {
+                                    p.card
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                })
+                                .stroke(if active {
+                                    Stroke::new(1.0_f32, p.accent.gamma_multiply(0.75))
+                                } else {
+                                    Stroke::NONE
+                                })
+                                .rounding(Rounding::same(RADIUS_SM))
+                                .truncate(),
+                            )
+                            .on_hover_text(tip);
+                        if resp.clicked() {
+                            if view.entry_tab != tab {
+                                view.replace_targets.clear();
+                            }
+                            view.entry_tab = tab;
+                        }
+                    }
+                });
+            } else {
+                // 极窄回退：仍强制每个 Tab >= 100px 宽度，避免单字竖排
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(gap, gap);
+                    for tab in ImportEntryTab::ALL {
+                        let active = view.entry_tab == tab;
+                        let lbl = tab.label(locale);
+                        let tip = tab.tip(locale);
+                        let resp = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(&lbl)
+                                        .size(FONT_BODY)
+                                        .strong()
+                                        .color(if active { p.accent } else { p.text_secondary }),
+                                )
+                                .fill(if active {
+                                    p.card
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                })
+                                .stroke(if active {
+                                    Stroke::new(1.0_f32, p.accent.gamma_multiply(0.75))
+                                } else {
+                                    Stroke::NONE
+                                })
+                                .rounding(Rounding::same(RADIUS_SM))
+                                .min_size(vec2(100.0, tab_h))
+                                .truncate(),
+                            )
+                            .on_hover_text(tip);
+                        if resp.clicked() {
+                            if view.entry_tab != tab {
+                                view.replace_targets.clear();
+                            }
+                            view.entry_tab = tab;
+                        }
+                    }
+                });
+            }
+        });
+}
+
+/// 用户自定义分组选择器 + 内联「+ 新建分组」控件（手动配置与文本导入共享）。
+fn render_group_selector(
+    ui: &mut Ui,
+    registry: &Registry,
+    view: &mut ImportViewState,
+    locale: Locale,
+    p: Palette,
+) -> bool {
+    let mut group_changed = false;
+    let groups = view.all_groups(registry);
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+        ui.label(
+            RichText::new(translate(locale, "gui.import.group.label", &[]))
+                .size(FONT_META)
+                .strong()
+                .color(p.text_secondary),
+        );
+        for g in &groups {
+            let selected = view.selected_group == *g;
+            if ui.selectable_label(selected, g).clicked() {
+                view.selected_group = g.clone();
+                group_changed = true;
+            }
+        }
+        let input_w = (ui.available_width() - 108.0).clamp(140.0, 200.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut view.new_group_input)
+                .desired_width(input_w)
+                .hint_text(translate(locale, "gui.import.group.new_hint", &[])),
+        );
+        if btn_outlined(
+            ui,
+            p,
+            &translate(locale, "gui.import.group.create_btn", &[]),
+            !view.new_group_input.trim().is_empty(),
+        )
+        .clicked()
+        {
+            let name = view.new_group_input.clone();
+            match view.create_and_select_group(&name) {
+                Ok(created) => {
+                    view.feedback = Some(Ok(format!("已创建并选中自定义分组「{created}」。")));
+                    group_changed = true;
+                }
+                Err(err) => {
+                    view.feedback = Some(Err(err));
+                }
+            }
+        }
+    });
+    group_changed
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_manual_entry(
     ui: &mut Ui,
     registry: &Registry,
     view: &mut ImportViewState,
+    locale: Locale,
     p: Palette,
-    tier: ViewportTier,
+    stacked_fields: bool,
+    show_tech: bool,
 ) {
     subtle_well_frame(p)
         .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if tier == ViewportTier::Narrow {
+
+            // 1. 所属分组选择 / 新建分组（问题 2）
+            render_group_selector(ui, registry, view, locale, p);
+            ui.add_space(SPACE_2);
+
+            // 2. 网址 / 名称 / 备注输入（窄屏严格单列全宽 > 150px，绝不左右挤压）
+            ui.label(
+                RichText::new("目标网址（默认 https://）")
+                    .size(FONT_META)
+                    .color(p.text_secondary),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut view.single_url_input)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("https://example.com/cdn-cgi/trace"),
+            );
+            ui.add_space(SPACE_1);
+
+            if stacked_fields {
                 ui.label(
-                    RichText::new("目标网址（默认 https://，拒绝私有/回环/凭据）")
+                    RichText::new(if show_tech {
+                        "名称标识（自动补 user. 前缀）"
+                    } else {
+                        "名称标识（选填）"
+                    })
+                    .size(FONT_META)
+                    .color(p.text_secondary),
+                );
+                ui.add_space(SPACE_1);
+                ui.add(
+                    egui::TextEdit::singleline(&mut view.single_id_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("例如：my-office-site"),
+                );
+                ui.add_space(SPACE_2);
+                ui.label(
+                    RichText::new("备注说明（选填）")
                         .size(FONT_META)
                         .color(p.text_secondary),
                 );
-                ui.add(
-                    egui::TextEdit::singleline(&mut view.single_url_input)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("https://example.com/cdn-cgi/trace"),
-                );
                 ui.add_space(SPACE_1);
+                ui.add(
+                    egui::TextEdit::singleline(&mut view.surface_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("用途或说明备注"),
+                );
+            } else {
                 spaced_columns(ui, 2, SPACE_2, |col_ui, idx| {
                     if idx == 0 {
                         col_ui.label(
-                            RichText::new("目标 ID（自动补 user.）")
+                            RichText::new("名称标识（选填）")
                                 .size(FONT_META)
                                 .color(p.text_secondary),
                         );
                         col_ui.add(
                             egui::TextEdit::singleline(&mut view.single_id_input)
-                                .desired_width(f32::INFINITY),
+                                .desired_width(f32::INFINITY)
+                                .hint_text("例如：my-office-site"),
                         );
                     } else {
                         col_ui.label(
-                            RichText::new("表面说明")
-                                .size(FONT_META)
-                                .color(p.text_secondary),
-                        );
-                        col_ui.add(
-                            egui::TextEdit::singleline(&mut view.surface_input)
-                                .desired_width(f32::INFINITY),
-                        );
-                    }
-                });
-            } else {
-                spaced_columns(ui, 3, SPACE_2, |col_ui, idx| match idx {
-                    0 => {
-                        col_ui.label(
-                            RichText::new("目标网址（默认 https://）")
-                                .size(FONT_META)
-                                .color(p.text_secondary),
-                        );
-                        col_ui.add(
-                            egui::TextEdit::singleline(&mut view.single_url_input)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("https://example.com/cdn-cgi/trace"),
-                        );
-                    }
-                    1 => {
-                        col_ui.label(
-                            RichText::new("目标 ID（自动补 user.）")
-                                .size(FONT_META)
-                                .color(p.text_secondary),
-                        );
-                        col_ui.add(
-                            egui::TextEdit::singleline(&mut view.single_id_input)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("user.my-target"),
-                        );
-                    }
-                    _ => {
-                        col_ui.label(
-                            RichText::new("表面说明（用途备注）")
+                            RichText::new("备注说明（选填）")
                                 .size(FONT_META)
                                 .color(p.text_secondary),
                         );
@@ -503,27 +870,33 @@ fn render_manual_entry(
                 });
             }
 
-            ui.add_space(SPACE_1);
+            ui.add_space(SPACE_2);
             ui.label(
-                RichText::new("为该网址绑定检查方式（可多选，悬停查看 Reader 与证明边界）：")
+                RichText::new("选择检查方式（可多选，悬停查看说明）：")
                     .size(FONT_META)
                     .strong()
                     .color(p.text_secondary),
             );
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(SPACE_2, 2.0);
+                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
                 for cat in InspectionCategory::ALL {
                     let rule_id = cat.default_builtin_rule_id();
                     let mut checked = view.selected_signals.contains(rule_id);
                     let (proves, cannot_prove) = cat.proof_boundary();
+                    let rule_tip = if show_tech {
+                        format!(
+                            "{}\n【能证明】{proves}\n【不能证明】{cannot_prove}\n（内置规则：{rule_id}）",
+                            cat.label()
+                        )
+                    } else {
+                        format!(
+                            "{}\n【能证明】{proves}\n【不能证明】{cannot_prove}",
+                            cat.label()
+                        )
+                    };
                     if ui
                         .checkbox(&mut checked, RichText::new(cat.short_label()).size(FONT_META))
-                        .on_hover_text(format!(
-                            "{} [{} · {}]\n【能证明】{proves}\n【不能证明】{cannot_prove}",
-                            cat.label(),
-                            rule_id,
-                            cat.reader_kind()
-                        ))
+                        .on_hover_text(rule_tip)
                         .changed()
                     {
                         if checked {
@@ -535,286 +908,376 @@ fn render_manual_entry(
                 }
             });
 
-        // 展示本次包内新增规则与已登记用户规则供直接勾选绑定
-        let mut extra_rule_ids: Vec<(String, String, bool)> = Vec::new();
-        for r in &view.manual_rules {
-            extra_rule_ids.push((r.id.clone(), r.extract.kind.clone(), true));
-        }
-        for ur in registry.user_rules() {
-            if !extra_rule_ids.iter().any(|(id, _, _)| id == &ur.id) {
-                extra_rule_ids.push((ur.id.clone(), ur.kind.clone(), false));
+            // 展示本次包内新增规则与已登记用户规则供勾选绑定
+            let mut extra_rule_ids: Vec<(String, String, bool)> = Vec::new();
+            for r in &view.manual_rules {
+                extra_rule_ids.push((r.id.clone(), r.extract.kind.clone(), true));
             }
-        }
-        if !extra_rule_ids.is_empty() {
-            ui.add_space(SPACE_1);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("自定义检查方式：")
-                        .size(FONT_META)
-                        .strong()
-                        .color(p.accent),
-                );
-                for (rid, kind, is_staged) in extra_rule_ids {
-                    let mut checked = view.selected_signals.contains(&rid);
-                    let tag = if is_staged { "包内新增" } else { "已登记" };
-                    if ui
-                        .checkbox(
-                            &mut checked,
-                            RichText::new(format!("{rid} [{kind} · {tag}]")).size(FONT_META),
-                        )
-                        .changed()
-                    {
-                        if checked {
-                            view.selected_signals.insert(rid);
+            for ur in registry.user_rules() {
+                if !extra_rule_ids.iter().any(|(id, _, _)| id == &ur.id) {
+                    extra_rule_ids.push((ur.id.clone(), ur.kind.clone(), false));
+                }
+            }
+            if !extra_rule_ids.is_empty() {
+                ui.add_space(SPACE_2);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                    ui.label(
+                        RichText::new("自定义检查方式：")
+                            .size(FONT_META)
+                            .strong()
+                            .color(p.accent),
+                    );
+                    for (rid, kind, is_staged) in extra_rule_ids {
+                        let mut checked = view.selected_signals.contains(&rid);
+                        let tag = if is_staged { "待导入" } else { "已登记" };
+                        let disp = if show_tech {
+                            format!("{rid} [{kind} · {tag}]")
                         } else {
-                            view.selected_signals.remove(&rid);
+                            format!(
+                                "{}（{}）",
+                                rid.strip_prefix("rule.").unwrap_or(&rid),
+                                tag
+                            )
+                        };
+                        let resp = ui
+                            .checkbox(&mut checked, RichText::new(disp).size(FONT_META));
+                        let resp = if show_tech {
+                            resp.on_hover_text(format!("{rid} [{kind}]"))
+                        } else {
+                            resp
+                        };
+                        if resp.changed() {
+                            if checked {
+                                view.selected_signals.insert(rid);
+                            } else {
+                                view.selected_signals.remove(&rid);
+                            }
                         }
                     }
-                }
-            });
-        }
-
-        ui.add_space(SPACE_1);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = SPACE_2;
-            ui.checkbox(&mut view.allow_insecure_http, "允许 http://");
-            if btn_tonal(ui, p, "+ 加入导入包", true).clicked() {
-                let signals: Vec<String> = if view.selected_signals.is_empty() {
-                    vec!["rule.http".to_string()]
-                } else {
-                    view.selected_signals.iter().cloned().collect()
-                };
-                view.manual_targets.push(ImportTargetEntry {
-                    id: (!view.single_id_input.trim().is_empty())
-                        .then(|| view.single_id_input.trim().to_string()),
-                    url: view.single_url_input.trim().to_string(),
-                    surface: (!view.surface_input.trim().is_empty())
-                        .then(|| view.surface_input.trim().to_string()),
-                    signals,
-                    allow_insecure_http: view.allow_insecure_http,
                 });
-                view.single_url_input.clear();
-                view.single_id_input.clear();
             }
-            if btn_outlined(
-                ui,
-                p,
-                if view.show_inline_rule_editor {
-                    "收起检查方式定义"
-                } else {
-                    "+ 随包新增检查方式"
-                },
-                true,
-            )
-            .clicked()
-            {
-                view.show_inline_rule_editor = !view.show_inline_rule_editor;
-            }
-            if (!view.manual_targets.is_empty() || !view.manual_rules.is_empty())
-                && btn_outlined(ui, p, "清空待导入草稿", true).clicked()
-            {
-                view.manual_targets.clear();
-                view.manual_rules.clear();
-            }
-        });
 
-        // 可选折叠：随包附加自定义检查方式（与目标同属一个 Bundle！）
-        if view.show_inline_rule_editor {
-            ui.add_space(SPACE_3);
-            ui.separator();
-            ui.add_space(SPACE_2);
-            ui.label(
-                RichText::new("随包新增自定义检查方式（添加后将自动加入上方绑定选项，并随本次导入包一并校验）")
-                    .size(FONT_META)
-                    .strong()
-                    .color(p.warning_fg),
-            );
-            ui.add_space(SPACE_2);
-            spaced_columns(ui, 3, SPACE_2, |col_ui, idx| match idx {
-                0 => {
-                    col_ui.label(RichText::new("规则 ID（rule. 开头）").size(FONT_META).color(p.text_secondary));
-                    col_ui.add(
-                        egui::TextEdit::singleline(&mut view.rule_id_input)
-                            .desired_width(f32::INFINITY),
-                    );
-                }
-                1 => {
-                    col_ui.label(RichText::new("检查方式分类（9 种 Reader）").size(FONT_META).color(p.text_secondary));
-                    egui::ComboBox::from_id_salt("bundle_rule_cat_combo")
-                        .width((col_ui.available_width() - 4.0).max(110.0))
-                        .selected_text(format!(
-                            "{} [{}]",
-                            view.rule_category.short_label(),
-                            view.rule_category.reader_kind()
-                        ))
-                        .show_ui(col_ui, |ui| {
-                            for cat in InspectionCategory::ALL {
-                                if ui
-                                    .selectable_value(
-                                        &mut view.rule_category,
-                                        cat,
-                                        format!("{} [{}]", cat.label(), cat.reader_kind()),
-                                    )
-                                    .clicked()
-                                {
-                                    let (pat, cap) = cat.default_pattern_and_capture();
-                                    view.rule_pattern_input = pat.to_string();
-                                    view.rule_capture_input = cap.to_string();
-                                }
-                            }
-                        });
-                }
-                _ => {
-                    col_ui.label(RichText::new("提取模式 (pattern，防 ReDoS)").size(FONT_META).color(p.text_secondary));
-                    col_ui.add(
-                        egui::TextEdit::singleline(&mut view.rule_pattern_input)
-                            .desired_width(f32::INFINITY)
-                            .code_editor(),
-                    );
-                }
-            });
             ui.add_space(SPACE_2);
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACE_2;
-                ui.label(RichText::new("捕获组：").size(FONT_META).color(p.text_secondary));
-                egui::ComboBox::from_id_salt("bundle_rule_cap_combo")
-                    .width(72.0)
-                    .selected_text(&view.rule_capture_input)
-                    .show_ui(ui, |ui| {
-                        for cap in ["value", "1", "0"] {
-                            ui.selectable_value(&mut view.rule_capture_input, cap.to_string(), cap);
-                        }
-                    });
-                ui.label(RichText::new("归因层：").size(FONT_META).color(p.text_secondary));
-                egui::ComboBox::from_id_salt("bundle_rule_layer_combo")
-                    .width(132.0)
-                    .selected_text(match view.rule_layer {
-                        Layer::ServicePolicy => "服务策略",
-                        Layer::EgressNetwork => "出口网络",
-                        Layer::Preference => "公开版次",
-                        _ => "服务策略",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut view.rule_layer, Layer::ServicePolicy, "服务策略");
-                        ui.selectable_value(&mut view.rule_layer, Layer::EgressNetwork, "出口网络");
-                        ui.selectable_value(&mut view.rule_layer, Layer::Preference, "公开版次");
-                    });
-                if btn_tonal(ui, p, "加入本次导入包的规则列表", true).clicked() {
-                    let rule_id = view.rule_id_input.trim().to_string();
-                    let rule = Rule {
-                        id: rule_id.clone(),
-                        version: 1,
-                        enabled: true,
-                        layer: view.rule_layer,
-                        channel: view.rule_channel.clone(),
-                        credibility: Confidence::Low,
-                        source_grade: Source::DirectAnonymousObservation,
-                        notes: view.rule_notes_input.trim().to_string(),
-                        negative_case: "用户自定义规则未命中时仅记缺失，不推断国家".to_string(),
-                        extract: Extractor {
-                            kind: view.rule_category.reader_kind().to_string(),
-                            pattern: view.rule_pattern_input.trim().to_string(),
-                            capture: view.rule_capture_input.trim().to_string(),
-                        },
-                        applies_to: Vec::new(),
+                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+                ui.checkbox(&mut view.allow_insecure_http, "允许 http://");
+                if btn_tonal(ui, p, "+ 加入待导入列表", true).clicked() {
+                    let signals: Vec<String> = if view.selected_signals.is_empty() {
+                        vec!["rule.http".to_string()]
+                    } else {
+                        view.selected_signals.iter().cloned().collect()
                     };
-                    view.manual_rules.retain(|r| r.id != rule_id);
-                    view.manual_rules.push(rule);
-                    view.selected_signals.insert(rule_id);
+                    view.manual_targets.push(ImportTargetEntry {
+                        id: (!view.single_id_input.trim().is_empty())
+                            .then(|| view.single_id_input.trim().to_string()),
+                        url: view.single_url_input.trim().to_string(),
+                        surface: (!view.surface_input.trim().is_empty())
+                            .then(|| view.surface_input.trim().to_string()),
+                        signals,
+                        allow_insecure_http: view.allow_insecure_http,
+                        user_group: Some(view.selected_group.clone()),
+                        replace_existing: false,
+                    });
+                    view.single_url_input.clear();
+                    view.single_id_input.clear();
                 }
-            });
-        }
-    });
-}
-
-fn render_text_file_entry(ui: &mut Ui, view: &mut ImportViewState, p: Palette) {
-    subtle_well_frame(p)
-        .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(SPACE_1, SPACE_1);
-                ui.add(
-                    egui::TextEdit::singleline(&mut view.text_file_path)
-                        .desired_width(190.0)
-                        .hint_text(r"本地路径 (.txt/.md/.csv/.json)"),
-                );
-                if btn_tonal(
+                if btn_outlined(
                     ui,
                     p,
-                    "读取本地文件",
-                    !view.text_file_path.trim().is_empty(),
+                    if view.show_inline_rule_editor {
+                        "收起自定义规则"
+                    } else {
+                        "+ 自定义检查规则"
+                    },
+                    true,
                 )
                 .clicked()
                 {
-                    let path = Path::new(view.text_file_path.trim());
-                    match read_import_text_file(path, &[], view.text_allow_insecure_http) {
-                        Ok(bundle) => {
-                            if let Ok(raw) = std::fs::read_to_string(path) {
-                                view.text_editor_content = raw;
-                            }
-                            view.text_loaded_bundle = Some(bundle);
-                            view.text_parse_error = None;
-                            view.feedback = Some(Ok(format!(
-                                "已读取并解析文件 {}，请在右侧预览表核对绑定关系。",
-                                path.display()
-                            )));
-                        }
-                        Err(err) => {
-                            view.text_parse_error = Some(err.to_string());
-                            view.text_loaded_bundle = None;
-                        }
-                    }
+                    view.show_inline_rule_editor = !view.show_inline_rule_editor;
                 }
-                if btn_outlined(ui, p, "载入 3 行多规则示例", true).clicked() {
-                    view.text_editor_content = SAMPLE_TEXT_LINES.to_string();
-                    match parse_import_text(
-                        &view.text_editor_content,
-                        &[],
-                        view.text_allow_insecure_http,
-                    ) {
-                        Ok(b) => {
-                            view.text_loaded_bundle = Some(b);
-                            view.text_parse_error = None;
-                        }
-                        Err(e) => {
-                            view.text_parse_error = Some(e.to_string());
-                        }
-                    }
+                if (!view.manual_targets.is_empty() || !view.manual_rules.is_empty())
+                    && btn_outlined(ui, p, "清空草稿", true).clicked()
+                {
+                    view.manual_targets.clear();
+                    view.manual_rules.clear();
                 }
             });
 
-            ui.add_space(SPACE_1);
+            // 可选折叠：自定义检查规则（默认人话标签，技术细节收进悬停提示）
+            if view.show_inline_rule_editor {
+                ui.add_space(SPACE_3);
+                ui.separator();
+                ui.add_space(SPACE_2);
+                ui.label(
+                    RichText::new("添加自定义检查规则（添加后将自动绑定到本次导入列表）")
+                        .size(FONT_META)
+                        .strong()
+                        .color(p.warning_fg),
+                );
+                ui.add_space(SPACE_2);
+
+                ui.label(
+                    RichText::new("规则名称")
+                        .size(FONT_META)
+                        .color(p.text_secondary),
+                )
+                .on_hover_text("自动补全 rule. 前缀");
+                ui.add(
+                    egui::TextEdit::singleline(&mut view.rule_id_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("例如：my-region-rule"),
+                );
+                ui.add_space(SPACE_2);
+
+                ui.label(
+                    RichText::new("检查方式")
+                        .size(FONT_META)
+                        .color(p.text_secondary),
+                );
+                egui::ComboBox::from_id_salt("bundle_rule_cat_combo")
+                    .width((ui.available_width() - SPACE_2).max(160.0))
+                    .selected_text(if show_tech {
+                        format!(
+                            "{} [{}]",
+                            view.rule_category.short_label(),
+                            view.rule_category.reader_kind()
+                        )
+                    } else {
+                        view.rule_category.label().to_string()
+                    })
+                    .show_ui(ui, |ui| {
+                        for cat in InspectionCategory::ALL {
+                            let opt = if show_tech {
+                                format!("{} [{}]", cat.label(), cat.reader_kind())
+                            } else {
+                                cat.label().to_string()
+                            };
+                            if ui
+                                .selectable_value(&mut view.rule_category, cat, opt)
+                                .clicked()
+                            {
+                                let (pat, cap) = cat.default_pattern_and_capture();
+                                view.rule_pattern_input = pat.to_string();
+                                view.rule_capture_input = cap.to_string();
+                            }
+                        }
+                    });
+                ui.add_space(SPACE_2);
+
+                ui.label(
+                    RichText::new("匹配内容")
+                        .size(FONT_META)
+                        .color(p.text_secondary),
+                )
+                .on_hover_text("支持安全的线性时间匹配表达式，自动拒绝高风险回溯模式");
+                ui.add(
+                    egui::TextEdit::singleline(&mut view.rule_pattern_input)
+                        .desired_width(f32::INFINITY)
+                        .code_editor(),
+                );
+                ui.add_space(SPACE_2);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+                    ui.label(
+                        RichText::new("提取位置：")
+                            .size(FONT_META)
+                            .color(p.text_secondary),
+                    );
+                    egui::ComboBox::from_id_salt("bundle_rule_cap_combo")
+                        .width(80.0)
+                        .selected_text(&view.rule_capture_input)
+                        .show_ui(ui, |ui| {
+                            for cap in ["value", "1", "0"] {
+                                ui.selectable_value(
+                                    &mut view.rule_capture_input,
+                                    cap.to_string(),
+                                    cap,
+                                );
+                            }
+                        });
+                    ui.label(
+                        RichText::new("归属层：")
+                            .size(FONT_META)
+                            .color(p.text_secondary),
+                    );
+                    egui::ComboBox::from_id_salt("bundle_rule_layer_combo")
+                        .width(120.0)
+                        .selected_text(match view.rule_layer {
+                            Layer::ServicePolicy => "服务策略",
+                            Layer::EgressNetwork => "出口网络",
+                            Layer::Preference => "公开版次",
+                            _ => "服务策略",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut view.rule_layer,
+                                Layer::ServicePolicy,
+                                "服务策略",
+                            );
+                            ui.selectable_value(
+                                &mut view.rule_layer,
+                                Layer::EgressNetwork,
+                                "出口网络",
+                            );
+                            ui.selectable_value(
+                                &mut view.rule_layer,
+                                Layer::Preference,
+                                "公开版次",
+                            );
+                        });
+                    if btn_tonal(ui, p, "添加到本次规则列表", true).clicked() {
+                        let raw_id = view.rule_id_input.trim();
+                        let rule_id = if raw_id.starts_with("rule.") {
+                            raw_id.to_string()
+                        } else {
+                            format!("rule.{raw_id}")
+                        };
+                        let rule = Rule {
+                            id: rule_id.clone(),
+                            version: 1,
+                            enabled: true,
+                            layer: view.rule_layer,
+                            channel: view.rule_channel.clone(),
+                            credibility: Confidence::Low,
+                            source_grade: Source::DirectAnonymousObservation,
+                            notes: view.rule_notes_input.trim().to_string(),
+                            negative_case: "自定义规则未命中时仅记缺失，不推断国家".to_string(),
+                            extract: Extractor {
+                                kind: view.rule_category.reader_kind().to_string(),
+                                pattern: view.rule_pattern_input.trim().to_string(),
+                                capture: view.rule_capture_input.trim().to_string(),
+                            },
+                            applies_to: Vec::new(),
+                        };
+                        view.manual_rules.retain(|r| r.id != rule_id);
+                        view.manual_rules.push(rule);
+                        view.selected_signals.insert(rule_id);
+                    }
+                });
+            }
+        });
+}
+
+fn render_text_file_entry(
+    ui: &mut Ui,
+    registry: &Registry,
+    view: &mut ImportViewState,
+    locale: Locale,
+    p: Palette,
+    _stacked: bool,
+) {
+    subtle_well_frame(p)
+        .inner_margin(Margin::symmetric(SPACE_3, SPACE_3))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+
+            // 1. 默认分组选择 / 新建分组（用于未指定分组的行）
+            let mut reparse = render_group_selector(ui, registry, view, locale, p);
+            ui.add_space(SPACE_3);
+
+            // 2. 桌面端：系统文件选择按钮 + 示例按钮；移动端：诚实提示，直接用下方粘贴框
+            if cfg!(target_os = "android") || cfg!(target_os = "ios") {
+                render_admonition(ui, p.info_bg, p.info_fg, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(translate(
+                                locale,
+                                "gui.import.file.mobile_paste_hint",
+                                &[],
+                            ))
+                            .size(FONT_META)
+                            .color(p.text_primary),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.add_space(SPACE_2);
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+                    if btn_tonal(
+                        ui,
+                        p,
+                        &translate(locale, "gui.import.file.pick_text", &[]),
+                        true,
+                    )
+                    .clicked()
+                    {
+                        match view
+                            .pick_file("请选择要导入的网址文本文件", ImportFileFilter::TextBundle)
+                        {
+                            Ok(Some(path)) => {
+                                view.load_text_file(&path);
+                            }
+                            Ok(None) => {
+                                view.feedback =
+                                    Some(Ok("已取消文件选择，未更改当前内容。".to_string()));
+                            }
+                            Err(err) => {
+                                view.text_parse_error = Some(err);
+                            }
+                        }
+                    }
+                    if btn_outlined(ui, p, "载入分组示例", true).clicked() {
+                        view.text_editor_content = SAMPLE_TEXT_LINES.to_string();
+                        reparse = true;
+                    }
+                });
+                if !view.text_file_path.is_empty() {
+                    ui.add_space(SPACE_1);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("当前文件：{}", view.text_file_path))
+                                .size(FONT_META)
+                                .color(p.text_muted),
+                        )
+                        .truncate(),
+                    );
+                }
+                ui.add_space(SPACE_2);
+            }
+
+            // 3. 多行粘贴文本框（桌面与移动均可直接粘贴，宽度 100% 占满）
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut view.text_editor_content)
-                    .desired_rows(3)
+                    .desired_rows(4)
                     .desired_width(f32::INFINITY)
                     .code_editor(),
             );
-            ui.add_space(SPACE_1);
-            let mut reparse = resp.changed();
+            if resp.changed() {
+                reparse = true;
+            }
+            ui.add_space(SPACE_2);
+
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACE_2;
+                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
                 if ui
                     .checkbox(&mut view.text_allow_insecure_http, "允许 http://")
                     .changed()
                 {
                     reparse = true;
                 }
-                if btn_outlined(ui, p, "刷新解析预览", true).clicked() {
+                if btn_outlined(ui, p, "刷新预览", true).clicked() {
                     reparse = true;
                 }
-                ui.label(
-                    RichText::new("格式：URL | 规则1,规则2 | ID | 说明")
-                        .size(FONT_META)
-                        .color(p.text_muted),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("每行一条网址，可用「[分组名]」或「分组名 | 网址」归类")
+                            .size(FONT_META)
+                            .color(p.text_muted),
+                    )
+                    .wrap(),
                 );
             });
+
             if reparse {
-                match parse_import_text(
+                match parse_import_text_with_default_group(
                     &view.text_editor_content,
                     &[],
                     view.text_allow_insecure_http,
+                    Some(&view.selected_group),
                 ) {
                     Ok(b) => {
                         view.text_loaded_bundle = Some(b);
@@ -827,76 +1290,112 @@ fn render_text_file_entry(ui: &mut Ui, view: &mut ImportViewState, p: Palette) {
                 }
             }
             if let Some(err) = &view.text_parse_error {
-                ui.add_space(SPACE_1);
-                ui.colored_label(p.danger_fg, format!("解析失败：{err}"));
+                ui.add_space(SPACE_2);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("解析失败：{err}"))
+                            .size(FONT_META)
+                            .color(p.danger_fg),
+                    )
+                    .wrap(),
+                );
             }
         });
 }
 
-fn render_zip_bundle_entry(ui: &mut Ui, view: &mut ImportViewState, p: Palette) {
+fn render_zip_bundle_entry(ui: &mut Ui, view: &mut ImportViewState, locale: Locale, p: Palette) {
     subtle_well_frame(p)
-        .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
+        .inner_margin(Margin::symmetric(SPACE_3, SPACE_3))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACE_2;
-                ui.label(
-                    RichText::new("本地 ZIP 导入包路径：")
-                        .size(FONT_META)
-                        .color(p.text_secondary),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut view.zip_file_path)
-                        .desired_width(260.0)
-                        .hint_text(r"例如：G:\my-bundle.zip"),
-                );
-                if btn_tonal(
-                    ui,
-                    p,
-                    "安全解包并预览",
-                    !view.zip_file_path.trim().is_empty(),
-                )
-                .clicked()
-                {
-                    let path = Path::new(view.zip_file_path.trim());
-                    match read_import_zip(path) {
-                        Ok(bundle) => {
-                            view.zip_loaded_bundle = Some(bundle);
-                            view.zip_parse_error = None;
-                            view.feedback = Some(Ok(format!(
-                                "已安全解压并解析 ZIP 包 {}（临时目录已自动清理）。",
-                                path.display()
-                            )));
-                        }
-                        Err(err) => {
-                            view.zip_loaded_bundle = None;
-                            view.zip_parse_error = Some(err.to_string());
-                        }
-                    }
-                }
+            if cfg!(target_os = "android") || cfg!(target_os = "ios") {
+                render_admonition(ui, p.info_bg, p.info_fg, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(translate(locale, "gui.import.file.mobile_zip_hint", &[]))
+                                .size(FONT_META)
+                                .color(p.text_primary),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.add_space(SPACE_2);
                 if btn_outlined(ui, p, "载入内置示例 ZIP 包（含规则+网址）", true).clicked() {
                     view.load_sample_zip_bundle();
                 }
-            });
-            ui.add_space(SPACE_1);
-            ui.label(
-                RichText::new("ZIP 安全规范：支持 manifest.json + targets.{txt,md,csv,json} + 可选 rules.toml + 可选 README.md；单包 ≤ 10 MiB、解压 ≤ 50 MiB，自动拒绝路径穿越、符号链接与脚本文件。")
-                    .size(FONT_META)
-                    .color(p.text_muted),
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+                    if btn_tonal(
+                        ui,
+                        p,
+                        &translate(locale, "gui.import.file.pick_zip", &[]),
+                        true,
+                    )
+                    .clicked()
+                    {
+                        match view
+                            .pick_file("请选择本地 ZIP 导入包", ImportFileFilter::ZipBundle)
+                        {
+                            Ok(Some(path)) => {
+                                view.load_zip_file(&path);
+                            }
+                            Ok(None) => {
+                                view.feedback =
+                                    Some(Ok("已取消选择 ZIP 包，未更改当前内容。".to_string()));
+                            }
+                            Err(err) => {
+                                view.zip_parse_error = Some(err);
+                            }
+                        }
+                    }
+                    if btn_outlined(ui, p, "载入内置示例 ZIP 包（含规则+网址）", true).clicked() {
+                        view.load_sample_zip_bundle();
+                    }
+                });
+                if !view.zip_file_path.is_empty() {
+                    ui.add_space(SPACE_1);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("当前压缩包：{}", view.zip_file_path))
+                                .size(FONT_META)
+                                .color(p.text_muted),
+                        )
+                        .truncate(),
+                    );
+                }
+            }
+            ui.add_space(SPACE_2);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("安全校验：单包 ≤ 10 MiB、解压 ≤ 50 MiB，自动拦截路径穿越、符号链接与脚本文件。")
+                        .size(FONT_META)
+                        .color(p.text_muted),
+                )
+                .wrap(),
             );
             if let Some(err) = &view.zip_parse_error {
-                ui.add_space(SPACE_1);
-                ui.colored_label(p.danger_fg, format!("ZIP 校验未通过：{err}"));
+                ui.add_space(SPACE_2);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("压缩包校验未通过：{err}"))
+                            .size(FONT_META)
+                            .color(p.danger_fg),
+                    )
+                    .wrap(),
+                );
             }
         });
 }
 
 fn render_unified_preview_table(
     ui: &mut Ui,
+    view: &mut ImportViewState,
     preview: &parallaxe_core::import_bundle::BundlePreviewReport,
     readme: Option<&str>,
     locale: Locale,
     p: Palette,
+    show_tech: bool,
 ) {
     ui.label(
         RichText::new(translate(locale, "gui.import.preview.title", &[]))
@@ -904,7 +1403,7 @@ fn render_unified_preview_table(
             .strong()
             .color(p.text_primary),
     );
-    ui.add_space(2.0);
+    ui.add_space(SPACE_1);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(SPACE_1, SPACE_1);
         let src_key = match preview.source {
@@ -921,7 +1420,7 @@ fn render_unified_preview_table(
         );
         render_pill(
             ui,
-            &format!("{} URLs", preview.targets.len()),
+            &format!("{} 条网址", preview.targets.len()),
             p.accent,
             p.accent_soft,
             p.accent,
@@ -929,7 +1428,7 @@ fn render_unified_preview_table(
         if !preview.rules.is_empty() {
             render_pill(
                 ui,
-                &format!("+{} rules", preview.rules.len()),
+                &format!("+{} 条自定义规则", preview.rules.len()),
                 p.warning_fg,
                 p.warning_bg,
                 p.warning_fg,
@@ -958,10 +1457,13 @@ fn render_unified_preview_table(
         ui.add_space(SPACE_2);
         subtle_well_frame(p).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(format!("导入包说明（README 只读预览）：{}", rm.trim()))
-                    .size(FONT_META)
-                    .color(p.text_secondary),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("导入包说明（只读预览）：{}", rm.trim()))
+                        .size(FONT_META)
+                        .color(p.text_secondary),
+                )
+                .wrap(),
             );
         });
     }
@@ -984,17 +1486,50 @@ fn render_unified_preview_table(
                 ui.add_space(SPACE_1);
                 for rr in &preview.rules {
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = SPACE_2;
-                        ui.monospace(&rr.id);
-                        render_pill(ui, &rr.kind, p.info_fg, p.info_bg, p.info_fg);
-                        ui.label(
-                            RichText::new(format!("pattern={}", rr.pattern))
-                                .monospace()
+                        ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                        let rule_title = if show_tech {
+                            rr.id.clone()
+                        } else {
+                            rr.id.strip_prefix("rule.").unwrap_or(&rr.id).to_string()
+                        };
+                        let rule_resp = ui.label(
+                            RichText::new(rule_title)
+                                .strong()
                                 .size(FONT_META)
-                                .color(p.text_secondary),
+                                .color(p.text_primary),
                         );
+                        if show_tech {
+                            rule_resp.on_hover_text(&rr.id);
+                        }
+                        render_pill(
+                            ui,
+                            &friendly_reader_kind(&rr.kind, show_tech),
+                            p.info_fg,
+                            p.info_bg,
+                            p.info_fg,
+                        );
+                        if show_tech {
+                            ui.label(
+                                RichText::new(format!("pattern={}", rr.pattern))
+                                    .monospace()
+                                    .size(FONT_META)
+                                    .color(p.text_secondary),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new(format!("匹配：{}", rr.pattern))
+                                    .size(FONT_META)
+                                    .color(p.text_secondary),
+                            );
+                        }
                         if rr.valid {
-                            render_pill(ui, "有效", p.ok_fg, p.ok_bg, p.ok_fg);
+                            render_pill(
+                                ui,
+                                &translate(locale, "gui.import.preview.valid", &[]),
+                                p.ok_fg,
+                                p.ok_bg,
+                                p.ok_fg,
+                            );
                         } else {
                             ui.colored_label(
                                 p.danger_fg,
@@ -1006,143 +1541,152 @@ fn render_unified_preview_table(
             });
     }
 
+    // 按用户自定义分组折叠展示待导入网址（问题 2）
     if !preview.targets.is_empty() {
-        ui.add_space(SPACE_1);
-        let table_outer_w = ui.available_width();
+        ui.add_space(SPACE_2);
+        let mut grouped: BTreeMap<&str, Vec<&BundleTargetPreviewRow>> = BTreeMap::new();
+        for row in &preview.targets {
+            grouped
+                .entry(row.user_group.as_str())
+                .or_default()
+                .push(row);
+        }
+        let outer_w = ui.available_width();
         egui::Frame::none()
             .fill(p.card)
             .stroke(Stroke::new(1.0_f32, p.border_subtle))
             .rounding(Rounding::same(RADIUS_MD))
-            .inner_margin(Margin::symmetric(SPACE_2, SPACE_1))
+            .inner_margin(Margin::same(SPACE_2))
             .show(ui, |ui| {
-                ui.set_width((table_outer_w - SPACE_4).max(160.0));
-                if table_outer_w < 680.0 {
-                    // 紧凑双栏右列卡片行：免横向滚动即可一次看清「目标 ID + 网址 + 绑定规则 + 状态」
-                    let draw_rows = |ui: &mut Ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        for (idx, row) in preview.targets.iter().enumerate() {
-                            if idx > 0 {
-                                ui.add_space(2.0);
-                                let rect = ui.allocate_space(vec2(ui.available_width(), 1.0)).1;
-                                ui.painter()
-                                    .rect_filled(rect, Rounding::ZERO, p.border_subtle);
-                                ui.add_space(2.0);
-                            }
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = vec2(SPACE_1, 1.0);
-                                ui.label(
-                                    RichText::new(&row.planned_id)
-                                        .monospace()
-                                        .strong()
-                                        .size(FONT_META)
-                                        .color(p.text_primary),
-                                );
-                                for (sig, is_new) in &row.bound_signals {
-                                    if *is_new {
-                                        render_pill(
-                                            ui,
-                                            &format!("{sig} [包内新增]"),
-                                            p.warning_fg,
-                                            p.warning_bg,
-                                            p.warning_fg,
-                                        );
-                                    } else {
-                                        render_pill(ui, sig, p.info_fg, p.info_bg, p.info_fg);
-                                    }
-                                }
-                                if row.valid {
-                                    render_pill(
-                                        ui,
-                                        &translate(locale, "gui.import.preview.ready", &[]),
-                                        p.ok_fg,
-                                        p.ok_bg,
-                                        p.ok_fg,
-                                    );
-                                } else {
-                                    ui.colored_label(
-                                        p.danger_fg,
-                                        format!(
-                                            "错误：{}",
-                                            row.error.as_deref().unwrap_or("校验失败")
-                                        ),
-                                    );
-                                }
-                            });
-                            ui.label(
-                                RichText::new(&row.url)
-                                    .monospace()
+                ui.set_width((outer_w - SPACE_4).max(160.0));
+                ScrollArea::vertical()
+                    .id_salt("import_bundle_preview_vscroll")
+                    .max_height(240.0)
+                    .min_scrolled_height(180.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_min_width(0.0);
+                        for (group_name, rows) in grouped {
+                            let header = format!("{group_name} · {} 项", rows.len());
+                            egui::CollapsingHeader::new(
+                                RichText::new(header)
                                     .size(FONT_META)
-                                    .color(p.text_secondary),
-                            );
-                        }
-                    };
-                    if preview.targets.len() > 4 {
-                        ScrollArea::vertical()
-                            .id_salt("import_bundle_preview_vscroll")
-                            .max_height(200.0)
-                            .auto_shrink([false, true])
-                            .show(ui, draw_rows);
-                    } else {
-                        draw_rows(ui);
-                    }
-                } else {
-                    ScrollArea::horizontal()
-                        .id_salt("import_bundle_preview_hscroll")
-                        .max_width(table_outer_w)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            egui::Grid::new("import_bundle_preview_grid")
-                                .num_columns(4)
-                                .striped(true)
-                                .spacing([SPACE_3, 4.0])
-                                .min_col_width(96.0)
-                                .show(ui, |ui| {
-                                    for h in ["目标 ID", "目标网址", "绑定的检查方式", "校验状态"]
-                                    {
-                                        ui.label(
-                                            RichText::new(h)
-                                                .size(FONT_META)
-                                                .strong()
-                                                .color(p.text_secondary),
+                                    .strong()
+                                    .color(p.accent),
+                            )
+                            .id_salt(("import_preview_group", group_name))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for (idx, row) in rows.iter().enumerate() {
+                                    if idx > 0 {
+                                        ui.add_space(SPACE_1);
+                                        let rect =
+                                            ui.allocate_space(vec2(ui.available_width(), 1.0)).1;
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            Rounding::ZERO,
+                                            p.border_subtle,
                                         );
+                                        ui.add_space(SPACE_1);
                                     }
-                                    ui.end_row();
-                                    for row in &preview.targets {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&row.planned_id)
-                                                    .monospace()
-                                                    .size(FONT_META)
-                                                    .color(p.text_primary),
-                                            )
-                                            .wrap_mode(egui::TextWrapMode::Extend),
-                                        );
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(SPACE_1, SPACE_1);
+                                        // 交接文档 1.3：预览默认显示完整 `user.*` ID（不再隐藏前缀）。
+                                        let disp_id = row.planned_id.clone();
                                         ui.label(
-                                            RichText::new(&row.url)
-                                                .monospace()
+                                            RichText::new(disp_id)
+                                                .strong()
                                                 .size(FONT_META)
-                                                .color(p.text_secondary),
+                                                .color(p.text_primary),
                                         );
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.spacing_mut().item_spacing = vec2(SPACE_1, SPACE_1);
-                                            for (sig, is_new) in &row.bound_signals {
-                                                if *is_new {
-                                                    render_pill(
-                                                        ui,
-                                                        &format!("{sig} [包内新增]"),
-                                                        p.warning_fg,
-                                                        p.warning_bg,
-                                                        p.warning_fg,
-                                                    );
+                                        if row.duplicate_of.is_some() {
+                                            let mut replace = view.replace_targets.contains(&row.index);
+                                            if ui
+                                                .checkbox(
+                                                    &mut replace,
+                                                    RichText::new(if locale == Locale::EnUs {
+                                                        "Replace"
+                                                    } else {
+                                                        "更换"
+                                                    })
+                                                    .size(FONT_META)
+                                                    .strong()
+                                                    .color(p.warning_fg),
+                                                )
+                                                .on_hover_text(if locale == Locale::EnUs {
+                                                    "Create your authorized edition for this duplicate URL"
                                                 } else {
-                                                    render_pill(
-                                                        ui, sig, p.info_fg, p.info_bg, p.info_fg,
-                                                    );
+                                                    "为该重复网址新建「我的授权版」目标"
+                                                })
+                                                .changed()
+                                            {
+                                                if replace {
+                                                    view.replace_targets.insert(row.index);
+                                                } else {
+                                                    view.replace_targets.remove(&row.index);
                                                 }
                                             }
-                                        });
+                                            render_pill(
+                                                ui,
+                                                if row.duplicate_is_user {
+                                                    if locale == Locale::EnUs {
+                                                        "Already imported"
+                                                    } else {
+                                                        "已导入"
+                                                    }
+                                                } else if locale == Locale::EnUs {
+                                                    "Duplicate of built-in"
+                                                } else {
+                                                    "与内置重复"
+                                                },
+                                                p.info_fg,
+                                                p.info_bg,
+                                                p.info_fg,
+                                            );
+                                            if row.duplicate_protected {
+                                                render_pill(
+                                                    ui,
+                                                    if locale == Locale::EnUs {
+                                                        "Protected"
+                                                    } else {
+                                                        "受保护"
+                                                    },
+                                                    p.warning_fg,
+                                                    p.warning_bg,
+                                                    p.warning_fg,
+                                                );
+                                            }
+                                        }
+                                        for (sig, is_new) in &row.bound_signals {
+                                            let lbl = friendly_signal_label(sig, show_tech);
+                                            if *is_new {
+                                                let pill = render_pill(
+                                                    ui,
+                                                    &format!("{lbl} · 新增"),
+                                                    p.warning_fg,
+                                                    p.warning_bg,
+                                                    p.warning_fg,
+                                                );
+                                                if show_tech {
+                                                    pill.on_hover_text(sig);
+                                                }
+                                            } else {
+                                                let pill = render_pill(
+                                                    ui, &lbl, p.info_fg, p.info_bg, p.info_fg,
+                                                );
+                                                if show_tech {
+                                                    pill.on_hover_text(sig);
+                                                }
+                                            }
+                                        }
                                         if row.valid {
-                                            render_pill(ui, "就绪", p.ok_fg, p.ok_bg, p.ok_fg);
+                                            render_pill(
+                                                ui,
+                                                &translate(locale, "gui.import.preview.ready", &[]),
+                                                p.ok_fg,
+                                                p.ok_bg,
+                                                p.ok_fg,
+                                            );
                                         } else {
                                             ui.colored_label(
                                                 p.danger_fg,
@@ -1152,11 +1696,19 @@ fn render_unified_preview_table(
                                                 ),
                                             );
                                         }
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                }
+                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&row.url)
+                                                .size(FONT_META)
+                                                .color(p.text_secondary),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                            });
+                        }
+                    });
             });
     }
 }
@@ -1170,19 +1722,45 @@ fn render_dynamic_consent_and_submit(
     preview: &parallaxe_core::import_bundle::BundlePreviewReport,
     locale: Locale,
     p: Palette,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     if locale == Locale::EnUs {
-        ui.label(
-            RichText::new(translate(locale, "gui.import.legal_en_banner", &[]))
-                .size(FONT_META)
-                .color(p.text_muted),
+        ui.add(
+            egui::Label::new(
+                RichText::new(translate(locale, "gui.import.legal_en_banner", &[]))
+                    .size(FONT_META)
+                    .color(p.text_muted),
+            )
+            .wrap(),
         );
         ui.add_space(SPACE_1);
     }
     let need_both = preview.requires_target_consent && preview.requires_rule_consent;
     let t_cnt = bundle.targets.len().to_string();
     let r_cnt = bundle.rules.len().to_string();
+    let unresolved_duplicates = preview
+        .targets
+        .iter()
+        .filter(|row| {
+            row.duplicate_of.is_some()
+                && !bundle
+                    .targets
+                    .get(row.index.saturating_sub(1))
+                    .is_some_and(|entry| entry.replace_existing)
+        })
+        .count();
+    let duplicate_hint = if unresolved_duplicates > 0 {
+        Some(if locale == Locale::EnUs {
+            format!(
+                "{unresolved_duplicates} duplicate URL(s) still need an explicit Replace decision."
+            )
+        } else {
+            format!("还有 {unresolved_duplicates} 条重复网址未确认「更换」，默认不会导入。")
+        })
+    } else {
+        None
+    };
     let submit_label = if !bundle.rules.is_empty() {
         translate(
             locale,
@@ -1195,25 +1773,28 @@ fn render_dynamic_consent_and_submit(
 
     let mut trigger_import = false;
 
-    // 仅需网址声明时，把声明正文 + 勾选框与主导入按钮集成在同一张警示卡的底行，1280×820 首屏免滚即可一次看清并点击
     if preview.requires_target_consent && !preview.requires_rule_consent {
         render_admonition(ui, p.warning_bg, p.warning_fg, |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.spacing_mut().item_spacing.y = SPACE_1;
             ui.label(
                 RichText::new("【导入网址责任声明（必读原文）】")
                     .size(FONT_META)
                     .strong()
                     .color(p.warning_fg),
             );
-            ui.label(
-                RichText::new(USER_TARGET_LIABILITY_NOTICE)
-                    .size(FONT_META)
-                    .color(p.text_primary),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(USER_TARGET_LIABILITY_NOTICE)
+                        .size(FONT_META)
+                        .color(p.text_primary),
+                )
+                .wrap(),
             );
-            ui.add_space(2.0);
-            let can_import = preview.all_valid && view.target_consent_checked;
+            ui.add_space(SPACE_1);
+            let can_import =
+                preview.all_valid && view.target_consent_checked && unresolved_duplicates == 0;
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
                 ui.checkbox(
                     &mut view.target_consent_checked,
                     RichText::new(
@@ -1229,9 +1810,11 @@ fn render_dynamic_consent_and_submit(
             if let Some(err) = &preview.summary_error {
                 ui.label(RichText::new(err).size(FONT_META).color(p.danger_fg));
             }
+            if let Some(hint) = &duplicate_hint {
+                ui.label(RichText::new(hint).size(FONT_META).color(p.warning_fg));
+            }
         });
     } else {
-        // 含自定义规则时，并排（宽屏）或堆叠展示两层责任声明，随后紧跟单一主导入按钮
         if need_both && ui.available_width() >= 820.0 {
             spaced_columns(ui, 2, SPACE_3, |col_ui, idx| {
                 if idx == 0 {
@@ -1255,10 +1838,10 @@ fn render_dynamic_consent_and_submit(
         ui.add_space(SPACE_2);
         let consents_ok = (!preview.requires_target_consent || view.target_consent_checked)
             && (!preview.requires_rule_consent || view.rule_consent_checked);
-        let can_import = preview.all_valid && consents_ok;
+        let can_import = preview.all_valid && consents_ok && unresolved_duplicates == 0;
 
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = SPACE_3;
+            ui.spacing_mut().item_spacing = vec2(SPACE_3, SPACE_2);
             if btn_filled(ui, p, &submit_label, can_import).clicked() {
                 trigger_import = true;
             }
@@ -1268,6 +1851,8 @@ fn render_dynamic_consent_and_submit(
                         .size(FONT_META)
                         .color(p.warning_fg),
                 );
+            } else if let Some(hint) = &duplicate_hint {
+                ui.label(RichText::new(hint).size(FONT_META).color(p.warning_fg));
             } else if let Some(err) = &preview.summary_error {
                 ui.label(RichText::new(err).size(FONT_META).color(p.danger_fg));
             }
@@ -1282,12 +1867,21 @@ fn render_dynamic_consent_and_submit(
         ) {
             Ok(report) => {
                 actions.push(UiAction::SyncRegistry);
-                view.feedback = Some(Ok(format!(
-                    "已原子导入 {} 个自定义网址与 {} 条检查方式（origin={}，默认零发包；如需发起检查请点击上方「申请一次性在线检查」）。",
-                    report.imported_targets.len(),
-                    report.imported_rules.len(),
-                    report.origin
-                )));
+                let msg = if show_tech {
+                    format!(
+                        "已导入 {} 个自定义网址与 {} 条检查方式（origin={}，默认零发包；如需发起检查请点击上方「申请一次性在线检查」）。",
+                        report.imported_targets.len(),
+                        report.imported_rules.len(),
+                        report.origin
+                    )
+                } else {
+                    format!(
+                        "已导入 {} 个自定义网址与 {} 条检查方式（默认零发包；如需在线检测，请点击上方「申请一次性在线检查」）。",
+                        report.imported_targets.len(),
+                        report.imported_rules.len()
+                    )
+                };
+                view.feedback = Some(Ok(msg));
                 if view.entry_tab == ImportEntryTab::Manual {
                     view.manual_targets.clear();
                     view.manual_rules.clear();
@@ -1308,10 +1902,13 @@ fn render_target_consent_box(ui: &mut Ui, view: &mut ImportViewState, p: Palette
                 .strong()
                 .color(p.warning_fg),
         );
-        ui.label(
-            RichText::new(USER_TARGET_LIABILITY_NOTICE)
-                .size(FONT_META)
-                .color(p.text_primary),
+        ui.add(
+            egui::Label::new(
+                RichText::new(USER_TARGET_LIABILITY_NOTICE)
+                    .size(FONT_META)
+                    .color(p.text_primary),
+            )
+            .wrap(),
         );
         ui.add_space(SPACE_1);
         ui.checkbox(
@@ -1333,10 +1930,13 @@ fn render_rule_consent_box(ui: &mut Ui, view: &mut ImportViewState, p: Palette) 
                 .strong()
                 .color(p.danger_fg),
         );
-        ui.label(
-            RichText::new(USER_RULE_LIABILITY_NOTICE)
-                .size(FONT_META)
-                .color(p.text_primary),
+        ui.add(
+            egui::Label::new(
+                RichText::new(USER_RULE_LIABILITY_NOTICE)
+                    .size(FONT_META)
+                    .color(p.text_primary),
+            )
+            .wrap(),
         );
         ui.add_space(SPACE_1);
         ui.checkbox(
@@ -1350,12 +1950,15 @@ fn render_rule_consent_box(ui: &mut Ui, view: &mut ImportViewState, p: Palette) 
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_gate_header_card(
     ui: &mut Ui,
     registry: &mut Registry,
     view: &mut ImportViewState,
     locale: Locale,
     p: Palette,
+    tier: ViewportTier,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     let user_targets_count = registry.user_targets().len();
@@ -1365,37 +1968,83 @@ fn render_gate_header_card(
     let t_str = user_targets_count.to_string();
     let r_str = user_rules_count.to_string();
 
+    // 移动端尚未导入任何目标时，精简为紧凑单行状态带，确保 360×640 首屏直接看到三入口与输入控件
+    if tier == ViewportTier::Narrow && !has_targets && user_rules_count == 0 {
+        subtle_well_frame(p)
+            .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                    render_pill(
+                        ui,
+                        &translate(locale, "gui.import.gate.zero_packet_pill", &[]),
+                        p.info_fg,
+                        p.info_bg,
+                        p.info_fg,
+                    );
+                    ui.label(
+                        RichText::new(translate(
+                            locale,
+                            "gui.import.gate.counts",
+                            &[&t_str, &r_str],
+                        ))
+                        .size(FONT_META)
+                        .color(p.text_secondary),
+                    );
+                });
+            });
+        return;
+    }
+
     card_frame(p)
         .inner_margin(Margin::symmetric(SPACE_3, SPACE_2))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
-                icon_tile(ui, IconKind::Lock, 22.0, p.accent, p.accent_soft);
+                icon_tile(ui, IconKind::Lock, 24.0, p.accent, p.accent_soft);
                 ui.label(
                     RichText::new(translate(locale, "gui.import.gate.title", &[]))
                         .size(FONT_TITLE)
                         .strong()
                         .color(p.text_primary),
                 );
+                let origin_pill_text = if show_tech {
+                    format!(
+                        "{} (origin={ORIGIN_USER_IMPORTED})",
+                        translate(locale, "gui.import.gate.origin_pill", &[])
+                    )
+                } else {
+                    translate(locale, "gui.import.gate.origin_pill", &[])
+                };
                 render_pill(
                     ui,
-                    &translate(locale, "gui.import.gate.origin_pill", &[]),
+                    &origin_pill_text,
                     p.warning_fg,
                     p.warning_bg,
                     p.warning_fg,
-                )
-                .on_hover_text(format!("origin={ORIGIN_USER_IMPORTED}"));
-                render_pill(
+                );
+                if show_tech {
+                    ui.label(
+                        RichText::new(format!("origin={ORIGIN_USER_IMPORTED}"))
+                            .monospace()
+                            .size(FONT_META)
+                            .color(p.text_muted),
+                    );
+                }
+                let zero_pill = render_pill(
                     ui,
                     &translate(locale, "gui.import.gate.zero_packet_pill", &[]),
                     p.info_fg,
                     p.info_bg,
                     p.info_fg,
-                )
-                .on_hover_text(format!(
-                    "allow_online=false · consent={LIABILITY_CONSENT_VERSION}"
-                ));
+                );
+                if show_tech {
+                    zero_pill.on_hover_text(format!(
+                        "allow_online=false · consent={LIABILITY_CONSENT_VERSION}"
+                    ));
+                }
                 ui.label(
                     RichText::new(translate(
                         locale,
@@ -1458,6 +2107,7 @@ fn render_gate_header_card(
                 {
                     registry.clear_user_imports();
                     view.online_confirm_open = false;
+                    view.inventory_group_filter = None;
                     actions.push(UiAction::SyncRegistry);
                     view.feedback = Some(Ok(
                         "已清除全部用户导入的网址、检查方式与会话许可，恢复至 135 项内置只读目录。"
@@ -1473,6 +2123,7 @@ fn render_online_session_confirm_modal(
     registry: &mut Registry,
     view: &mut ImportViewState,
     p: Palette,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1496,83 +2147,181 @@ fn render_online_session_confirm_modal(
     let mut close_without_grant = false;
     let mut close_after_grant = false;
 
-    egui::Window::new("【运行前强制确认】一次性会话级联网授权 (F3 许可闸门)")
-        .id(egui::Id::new("f3_online_session_confirm_modal"))
+    let screen = ctx.screen_rect();
+    let safe = crate::layout::SafeAreaInsets::for_platform();
+    let narrow = screen.width() < 520.0;
+    let h_margin = if screen.width() < 480.0 { 12.0 } else { 24.0 };
+    let inner_margin = if screen.width() < 480.0 {
+        SPACE_3
+    } else {
+        SPACE_5
+    };
+    let modal_inner_w =
+        (screen.width() - h_margin * 2.0 - inner_margin * 2.0 - 4.0).clamp(220.0, 560.0);
+    let safe_top = safe.top + 12.0;
+    let safe_bottom = safe.bottom + 12.0;
+    let offset_y = (safe_top - safe_bottom) * 0.5;
+    let max_win_h =
+        (screen.height() - safe_top - safe_bottom - inner_margin * 2.0 - 4.0).max(150.0);
+    let max_body_h = (max_win_h - 110.0).max(88.0);
+
+    egui::Area::new(egui::Id::new("f3_online_session_confirm_modal"))
         .order(egui::Order::Foreground)
-        .open(&mut window_open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(580.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .frame(
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, offset_y])
+        .constrain(true)
+        .show(ctx, |ui| {
             egui::Frame::window(&ctx.style())
                 .fill(p.card)
                 .stroke(Stroke::new(1.5_f32, p.warning_fg))
                 .rounding(Rounding::same(RADIUS_LG))
-                .inner_margin(Margin::same(SPACE_5)),
-        )
-        .show(ctx, |ui| {
-            ui.set_max_width(540.0);
-            render_admonition(ui, p.warning_bg, p.warning_fg, |ui| {
-                ui.label(
-                    RichText::new("请逐项核对即将发起一次性在线检查的自定义目标与规则摘要")
-                        .size(FONT_BODY)
-                        .strong()
-                        .color(p.warning_fg),
-                );
-                ui.add_space(SPACE_1);
-                ui.label(RichText::new(&prompt).size(FONT_META).color(p.text_primary));
-            });
+                .inner_margin(Margin::same(inner_margin))
+                .show(ui, |ui| {
+                    ui.set_width(modal_inner_w);
+                    ui.set_max_width(modal_inner_w);
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2((modal_inner_w - 34.0).max(150.0), 0.0),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                let title = if show_tech {
+                                    "【运行前确认】一次性在线检测授权 (F3)"
+                                } else {
+                                    "【运行前确认】一次性在线检测授权"
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title)
+                                            .size(if narrow { FONT_BODY } else { FONT_TITLE })
+                                            .strong()
+                                            .color(p.text_primary),
+                                    )
+                                    .wrap(),
+                                );
+                            },
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("×").size(16.0).color(p.text_secondary),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                window_open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(SPACE_2);
+                    ui.separator();
+                    ui.add_space(SPACE_2);
 
-            ui.add_space(SPACE_3);
-            ui.label(
-                RichText::new(
-                    "硬边界：预算维持全局并发≤6、单主机≤2、单响应≤16 MiB、单次逻辑 GET、不自动跟跳；遇验证码/403/429 立即停步。本次许可在运行启动时即原子销毁，绝不持久化、不写入 assets/。",
-                )
-                .size(FONT_META)
-                .color(p.text_secondary),
-            );
-            ui.add_space(SPACE_3);
-            ui.checkbox(
-                &mut view.online_run_confirmed_checkbox,
-                RichText::new(
-                    "我已确认上述网址为自有或获明确授权目标，知悉这是我自身行为并承担全部后果",
-                )
-                .size(FONT_BODY)
-                .strong(),
-            );
-            ui.add_space(SPACE_4);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACE_2;
-                let confirm_label = format!("确认注入一次性许可并检查 ({} 项)", ids.len());
-                if btn_filled(
-                    ui,
-                    p,
-                    &confirm_label,
-                    view.online_run_confirmed_checkbox && !ids.is_empty(),
-                )
-                .clicked()
-                {
-                    match registry.authorize_session_once(&ids, view.online_run_confirmed_checkbox)
-                    {
-                        Ok(grant) => {
-                            close_after_grant = true;
-                            view.feedback = Some(Ok(format!(
-                                "已注入一次性会话许可 ({}) 并启动单次检查。",
-                                grant.grant_id
-                            )));
-                            actions.push(UiAction::SyncRegistry);
-                            actions.push(UiAction::RunCustomTargets(ids.clone()));
-                        }
-                        Err(err) => {
-                            view.feedback = Some(Err(err.to_string()));
-                        }
-                    }
-                }
-                if btn_outlined(ui, p, "取消（保持默认零发包）", true).clicked() {
-                    close_without_grant = true;
-                }
-            });
+                    egui::ScrollArea::vertical()
+                        .id_salt("f3_online_confirm_modal_scroll")
+                        .max_height(max_body_h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_width(modal_inner_w);
+                            ui.set_max_width(modal_inner_w);
+                            render_admonition(ui, p.warning_bg, p.warning_fg, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("请逐项核对即将发起一次性在线检查的自定义目标")
+                                            .size(FONT_BODY)
+                                            .strong()
+                                            .color(p.warning_fg),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add_space(SPACE_1);
+                                for target in registry.user_targets() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!(
+                                                "· [{}] {}",
+                                                target.user_group, target.url
+                                            ))
+                                            .size(FONT_META)
+                                            .color(p.text_primary),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                if show_tech {
+                                    ui.add_space(SPACE_1);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&prompt)
+                                                .monospace()
+                                                .size(FONT_META)
+                                                .color(p.text_secondary),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                            });
+
+                            ui.add_space(SPACE_3);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "安全限制：并发与响应大小受控、不自动跳转、遇验证码或限流立即停止。本次授权仅对单次检测生效，启动后即自动销毁，不写入内置目录。",
+                                    )
+                                    .size(FONT_META)
+                                    .color(p.text_secondary),
+                                )
+                                .wrap(),
+                            );
+                            ui.add_space(SPACE_3);
+                            ui.checkbox(
+                                &mut view.online_run_confirmed_checkbox,
+                                RichText::new(
+                                    "我已确认上述网址为自有或获明确授权目标，知悉这是我自身行为并承担全部后果",
+                                )
+                                .size(FONT_BODY)
+                                .strong(),
+                            );
+                            ui.add_space(SPACE_4);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
+                                let confirm_label = format!("确认授权并检测 ({} 项)", ids.len());
+                                if btn_filled(
+                                    ui,
+                                    p,
+                                    &confirm_label,
+                                    view.online_run_confirmed_checkbox && !ids.is_empty(),
+                                )
+                                .clicked()
+                                {
+                                    match registry.authorize_session_once(
+                                        &ids,
+                                        view.online_run_confirmed_checkbox,
+                                    ) {
+                                        Ok(grant) => {
+                                            close_after_grant = true;
+                                            view.feedback = Some(Ok(if show_tech {
+                                                format!(
+                                                    "已注入一次性会话许可 ({}) 并启动单次检查。",
+                                                    grant.grant_id
+                                                )
+                                            } else {
+                                                "已完成一次性授权并启动单次在线检测。".to_string()
+                                            }));
+                                            actions.push(UiAction::SyncRegistry);
+                                            actions.push(UiAction::RunCustomTargets(ids.clone()));
+                                        }
+                                        Err(err) => {
+                                            view.feedback = Some(Err(err.to_string()));
+                                        }
+                                    }
+                                }
+                                if btn_outlined(ui, p, "取消（保持默认零发包）", true).clicked() {
+                                    close_without_grant = true;
+                                }
+                            });
+                        });
+                });
         });
 
     if !window_open || close_without_grant || close_after_grant {
@@ -1581,11 +2330,14 @@ fn render_online_session_confirm_modal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_imported_inventory_card(
     ui: &mut Ui,
     registry: &Registry,
     view: &mut ImportViewState,
+    locale: Locale,
     p: Palette,
+    show_tech: bool,
     actions: &mut Vec<UiAction>,
 ) {
     let user_targets = registry.user_targets();
@@ -1594,9 +2346,10 @@ fn render_imported_inventory_card(
     card_frame(p).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_2);
             ui.label(
                 RichText::new(format!(
-                    "已登记的用户导入清单（网址 {} 项 · 自定义检查方式 {} 项）",
+                    "已登记的用户导入清单（网址 {} 项 · 自定义规则 {} 项）",
                     user_targets.len(),
                     user_rules.len()
                 ))
@@ -1604,27 +2357,25 @@ fn render_imported_inventory_card(
                 .strong()
                 .color(p.text_primary),
             );
-            if !user_rules.is_empty() {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if btn_outlined(ui, p, "保存规则到用户态目录", true).clicked() {
-                        let dir = Path::new(view.user_state_dir_input.trim());
-                        match registry.save_user_rules_to_state_dir(dir) {
-                            Ok(saved) => {
-                                view.feedback = Some(Ok(format!(
-                                    "已将自定义检查方式保存至用户态文件：{}（未修改内置 assets/）",
-                                    saved.display()
-                                )));
-                            }
-                            Err(err) => {
-                                view.feedback = Some(Err(err.to_string()));
-                            }
+            if !user_rules.is_empty() && !cfg!(any(target_os = "android", target_os = "ios")) {
+                ui.add(
+                    egui::TextEdit::singleline(&mut view.user_state_dir_input)
+                        .desired_width(148.0),
+                );
+                if btn_outlined(ui, p, "保存规则到用户目录", true).clicked() {
+                    let dir = Path::new(view.user_state_dir_input.trim());
+                    match registry.save_user_rules_to_state_dir(dir) {
+                        Ok(saved) => {
+                            view.feedback = Some(Ok(format!(
+                                "已将自定义检查方式保存至：{}（未修改内置目录）",
+                                saved.display()
+                            )));
+                        }
+                        Err(err) => {
+                            view.feedback = Some(Err(err.to_string()));
                         }
                     }
-                    ui.add(
-                        egui::TextEdit::singleline(&mut view.user_state_dir_input)
-                            .desired_width(148.0),
-                    );
-                });
+                }
             }
         });
         ui.add_space(SPACE_2);
@@ -1632,53 +2383,131 @@ fn render_imported_inventory_card(
         if user_targets.is_empty() && user_rules.is_empty() {
             subtle_well_frame(p).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(
-                        "当前会话尚未导入自定义网址或检查方式。内置 107 个 Google 目标 + 28 个对照目标保持只读不变。",
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "当前尚未导入自定义网址或检查方式。内置 107 个 Google 目标与 28 个对照目标保持只读不变。",
+                        )
+                        .size(FONT_BODY)
+                        .color(p.text_secondary),
                     )
-                    .size(FONT_BODY)
-                    .color(p.text_secondary),
+                    .wrap(),
                 );
             });
             return;
         }
 
+        // 按自定义分组聚合统计与筛选（问题 2）
         if !user_targets.is_empty() {
-            ui.label(
-                RichText::new("已导入网址（每项独立绑定所选检查方式，默认零发包）")
-                    .size(FONT_META)
-                    .strong()
-                    .color(p.text_secondary),
-            );
-            ui.add_space(SPACE_1);
+            let mut by_group: BTreeMap<String, Vec<&parallaxe_core::targets::UserTargetMeta>> =
+                BTreeMap::new();
+            for meta in &user_targets {
+                by_group
+                    .entry(meta.user_group.clone())
+                    .or_default()
+                    .push(meta);
+            }
+
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                let all_lbl = format!(
+                    "{} · {}",
+                    translate(locale, "gui.import.group.all", &[]),
+                    user_targets.len()
+                );
+                if ui
+                    .selectable_label(view.inventory_group_filter.is_none(), all_lbl)
+                    .clicked()
+                {
+                    view.inventory_group_filter = None;
+                }
+                for (grp, list) in &by_group {
+                    let selected = view.inventory_group_filter.as_deref() == Some(grp.as_str());
+                    if ui
+                        .selectable_label(selected, format!("{grp} · {}", list.len()))
+                        .clicked()
+                    {
+                        view.inventory_group_filter = Some(grp.clone());
+                    }
+                }
+            });
+
+            ui.add_space(SPACE_2);
             subtle_well_frame(p).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt("imported_targets_inventory_scroll")
-                    .max_height(180.0)
-                    .auto_shrink([false, false])
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        for (idx, meta) in user_targets.into_iter().enumerate() {
-                            if idx > 0 {
-                                ui.add_space(SPACE_2);
-                            }
-                            ui.horizontal_wrapped(|ui| {
-                                ui.monospace(&meta.id);
-                                ui.label(&meta.url);
-                                render_pill(
-                                    ui,
-                                    &format!("规则：{}", meta.signals.join(", ")),
-                                    p.info_fg,
-                                    p.info_bg,
-                                    p.info_fg,
-                                );
-                                if ui.small_button("离线预览此项").clicked() {
-                                    actions.push(UiAction::RunUserImportOfflinePreview(vec![
-                                        meta.id.clone(),
-                                    ]));
+                        ui.set_min_width(0.0);
+                        for (grp, list) in &by_group {
+                            if let Some(filter) = &view.inventory_group_filter {
+                                if filter != grp {
+                                    continue;
                                 }
-                                if ui.small_button("静态解释").clicked() {
-                                    actions.push(UiAction::SelectTarget(meta.id.clone()));
+                            }
+                            let header = format!("{grp} · {} 项", list.len());
+                            egui::CollapsingHeader::new(
+                                RichText::new(header)
+                                    .size(FONT_BODY)
+                                    .strong()
+                                    .color(p.accent),
+                            )
+                            .id_salt(("inventory_group", grp))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for (idx, meta) in list.iter().enumerate() {
+                                    if idx > 0 {
+                                        ui.add_space(SPACE_2);
+                                    }
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                                        let disp_id = meta.id.clone();
+                                        ui.label(
+                                            RichText::new(disp_id)
+                                                .strong()
+                                                .size(FONT_META)
+                                                .color(p.text_primary),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&meta.url)
+                                                    .size(FONT_META)
+                                                    .color(p.text_secondary),
+                                            )
+                                            .wrap(),
+                                        );
+                                        let sig_summary = meta
+                                            .signals
+                                            .iter()
+                                            .map(|s| friendly_signal_label(s, show_tech))
+                                            .collect::<Vec<_>>()
+                                            .join("、");
+                                        render_pill(
+                                            ui,
+                                            &sig_summary,
+                                            p.info_fg,
+                                            p.info_bg,
+                                            p.info_fg,
+                                        );
+                                        if show_tech {
+                                            ui.label(
+                                                RichText::new(meta.signals.join(", "))
+                                                    .monospace()
+                                                    .size(FONT_META)
+                                                    .color(p.text_muted),
+                                            );
+                                        }
+                                        if ui.small_button("离线预览").clicked() {
+                                            actions.push(UiAction::RunUserImportOfflinePreview(
+                                                vec![meta.id.clone()],
+                                            ));
+                                        }
+                                        if ui.small_button("查看说明").clicked() {
+                                            actions.push(UiAction::SelectTarget(meta.id.clone()));
+                                        }
+                                    });
                                 }
                             });
                         }
@@ -1702,11 +2531,30 @@ fn render_imported_inventory_card(
                         ui.add_space(SPACE_1);
                     }
                     ui.horizontal_wrapped(|ui| {
-                        ui.monospace(&rm.id);
-                        render_pill(ui, &rm.kind, p.warning_fg, p.warning_bg, p.warning_fg);
+                        ui.spacing_mut().item_spacing = vec2(SPACE_2, SPACE_1);
+                        let disp_id = if show_tech {
+                            rm.id.clone()
+                        } else {
+                            rm.id.strip_prefix("rule.").unwrap_or(&rm.id).to_string()
+                        };
+                        let rule_resp = ui.label(
+                            RichText::new(disp_id)
+                                .strong()
+                                .size(FONT_META)
+                                .color(p.text_primary),
+                        );
+                        if show_tech {
+                            rule_resp.on_hover_text(&rm.id);
+                        }
+                        render_pill(
+                            ui,
+                            &friendly_reader_kind(&rm.kind, show_tech),
+                            p.warning_fg,
+                            p.warning_bg,
+                            p.warning_fg,
+                        );
                         ui.label(
-                            RichText::new(format!("匹配模式：{}", rm.pattern))
-                                .monospace()
+                            RichText::new(format!("匹配内容：{}", rm.pattern))
                                 .size(FONT_META)
                                 .color(p.text_secondary),
                         );

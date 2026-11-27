@@ -302,3 +302,98 @@ async fn imported_bundle_targets_send_zero_packets_before_f3_grant() {
     assert_eq!(output.report.network_request_count, 0);
     assert_eq!(output.report.exit_code, 3);
 }
+
+#[tokio::test]
+async fn custom_user_groups_parse_validate_isolate_and_preserve_zero_packet_gate() {
+    use parallaxe_core::import_bundle::{
+        parse_import_bundle_json, parse_import_text_with_default_group,
+    };
+    use parallaxe_core::targets::DEFAULT_USER_GROUP;
+
+    let mut reg = Registry::embedded().unwrap();
+    let txt = r#"
+# 未指定分组时归入默认“我的导入”
+https://default-grp.example.com/status | rule.http | def-1 | 默认组条目
+
+# 第 5 列显式指定新分组
+https://col5-grp.example.com/trace | rule.http,rule.trace | col5-1 | 五列组 | 办公专线
+
+# [分组名] 段头语法
+[流媒体自测]
+https://media-a.example.com/ | rule.http | media-a | 流媒体 A
+https://media-b.example.com/ | rule.http | media-b | 流媒体 B
+
+# 组名 | URL 语法（自动分配 user.* ID）
+海外节点 | https://overseas-a.example.com/cdn-cgi/trace | rule.trace | 节点出口
+@AI自建 | https://ai-custom.example.com/v1 | rule.http | 自建端点
+"#;
+    let bundle = parse_import_text_with_default_group(txt, &[], false, None).unwrap();
+    assert_eq!(bundle.targets.len(), 6);
+
+    let preview = reg.preview_import_bundle(&bundle);
+    assert!(
+        preview.all_valid,
+        "预览应全部通过：{:?}",
+        preview.summary_error
+    );
+    assert_eq!(preview.targets[0].user_group, DEFAULT_USER_GROUP);
+    assert_eq!(preview.targets[1].user_group, "办公专线");
+    assert_eq!(preview.targets[2].user_group, "流媒体自测");
+    assert_eq!(preview.targets[3].user_group, "流媒体自测");
+    assert_eq!(preview.targets[4].user_group, "海外节点");
+    assert!(preview.targets[4].planned_id.starts_with("user."));
+    assert_eq!(preview.targets[5].user_group, "AI自建");
+    assert!(preview.targets[5].planned_id.starts_with("user."));
+
+    let report = reg.import_bundle(&bundle, true, false).unwrap();
+    assert_eq!(report.imported_targets.len(), 6);
+    assert_eq!(reg.user_group_of("user.def-1"), Some(DEFAULT_USER_GROUP));
+    assert_eq!(reg.user_group_of("user.col5-1"), Some("办公专线"));
+    assert_eq!(reg.user_group_of("user.media-a"), Some("流媒体自测"));
+    assert_eq!(reg.user_groups().len(), 5);
+
+    // 严禁冒充内置 google / control 命名空间作为自定义组名
+    for forbidden in ["google", "google.ai", "control", "control.cdn"] {
+        let bad_txt = format!("https://bad-ns.example.com/ | rule.http | bad-ns | x | {forbidden}");
+        let bad_bundle = parse_import_text(&bad_txt, &[], false).unwrap();
+        let bad_preview = reg.preview_import_bundle(&bad_bundle);
+        assert!(!bad_preview.all_valid, "分组 {forbidden} 应被拒绝");
+        assert!(reg.import_bundle(&bad_bundle, true, false).is_err());
+    }
+
+    // JSON 格式支持 user_group 与 group 别名
+    let json_bundle = parse_import_bundle_json(
+        r#"{
+  "schema": "parallaxe.import/v1",
+  "source": "TEXT_FILE",
+  "targets": [
+    {"id": "json-g1", "url": "https://json-g1.example.com/", "signals": ["rule.http"], "user_group": "研发环境"},
+    {"id": "json-g2", "url": "https://json-g2.example.com/", "signals": ["rule.http"], "group": "研发环境"}
+  ]
+}"#,
+    )
+    .unwrap();
+    reg.import_bundle(&json_bundle, true, false).unwrap();
+    assert_eq!(reg.user_group_of("user.json-g1"), Some("研发环境"));
+    assert_eq!(reg.user_group_of("user.json-g2"), Some("研发环境"));
+
+    // 分组绝不影响许可闸门与零发包判定（未授 F3 前网络请求严格为 0，退出码仍为 3）
+    let calls = Arc::new(AtomicU64::new(0));
+    let transport: Arc<dyn Transport> = Arc::new(CountingTransport(Arc::clone(&calls)));
+    let out = runtime::run_check(
+        &reg,
+        &CheckOptions {
+            targets: vec!["user.col5-1".to_string(), "user.media-a".to_string()],
+            run_id: Some("run-user-group-zero".to_string()),
+            ..Default::default()
+        },
+        Some(transport),
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(out.report.network_request_count, 0);
+    assert_eq!(out.report.exit_code, 3);
+}

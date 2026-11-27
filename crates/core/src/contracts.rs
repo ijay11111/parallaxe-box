@@ -388,6 +388,8 @@ pub struct Expectation {
 /// 单目标结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultRecord {
+    #[serde(default)]
+    pub destination: crate::destination::Destination,
     pub target: String,
     pub state: State,
     pub reason: Option<String>,
@@ -536,6 +538,15 @@ pub struct GuardPlan {
 /// 报告封套（`parallaxe.report/v1`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    /// Observation boundary. Historical and desktop reports omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ObservationScope>,
+    /// Optional run origin audit tag (e.g. `AGENT_AUTONOMOUS` for opt-in autonomous AI runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Explicitly records when the session-only AI autonomous detection switch was active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomous_mode: Option<bool>,
     pub schema: String,
     pub tool: String,
     pub version: String,
@@ -552,6 +563,20 @@ pub struct Report {
     pub exit_code: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ObservationScope {
+    AndroidSimulatedUser,
+}
+impl ObservationScope {
+    pub fn for_platform(os: &str) -> Option<Self> {
+        (os == "android").then_some(Self::AndroidSimulatedUser)
+    }
+    pub fn description(self) -> &'static str {
+        "ANDROID_SIMULATED_USER — App 自身匿名请求，非系统级观测 / anonymous app requests only"
+    }
+}
+
 impl Report {
     /// 用给定字段构造报告，schema/tool 固定。
     pub fn new(
@@ -561,6 +586,9 @@ impl Report {
         mode: Mode,
     ) -> Self {
         Report {
+            scope: ObservationScope::for_platform(std::env::consts::OS),
+            origin: None,
+            autonomous_mode: None,
             schema: REPORT_SCHEMA.to_string(),
             tool: TOOL_NAME.to_string(),
             version: version.into(),
@@ -656,6 +684,8 @@ pub const CREDENTIAL_SOURCES: &[&str] = &[];
 pub const BROWSER_PROFILE_SOURCES: &[&str] = &[];
 /// 用户导入来源审计常量。
 pub const ORIGIN_USER_IMPORTED: &str = "USER_IMPORTED";
+/// AI 自主调试模式来源审计常量（仅在用户手动打开会话级开关时标注）。
+pub const ORIGIN_AGENT_AUTONOMOUS: &str = "AGENT_AUTONOMOUS";
 /// 用户导入责任声明同意版本常量。
 pub const LIABILITY_CONSENT_VERSION: &str = "liability-v1";
 /// 导入网址强制责任声明原文（必须在界面显式展示并经用户主动勾选）。
@@ -679,6 +709,7 @@ pub mod reason {
     pub const CAPTCHA_CHALLENGE: &str = "CAPTCHA_CHALLENGE";
     pub const DENIED_OR_AUTH: &str = "DENIED_OR_AUTH";
     pub const RATE_LIMITED: &str = "RATE_LIMITED";
+    pub const QOS_HTTP_STOP: &str = "QOS_HTTP_403_429_STOP";
     pub const CHALLENGE_PAGE: &str = "CHALLENGE_PAGE";
     pub const TRUNCATED: &str = "TRUNCATED";
     pub const TRANSPORT_TIMEOUT: &str = "TRANSPORT_TIMEOUT";
@@ -707,6 +738,9 @@ pub mod reason {
     pub const INTERFACE_UNVERIFIED: &str = "INTERFACE_UNVERIFIED";
     pub const FIXTURE_ONLY: &str = "FIXTURE_ONLY";
     pub const STALE_DIR_UNWRITABLE: &str = "STALE_DIR_UNWRITABLE";
+    pub const SCOPE_WASM_OFFLINE: &str = "SCOPE_WASM_OFFLINE";
+    pub const REGION_RESTRICTED: &str = "REGION_RESTRICTED";
+    pub const POLICY_BLOCKED: &str = "POLICY_BLOCKED";
 }
 
 /// 把三字母国家码归一到两字母，供 `--expect` 与投票比较；未知返回 None。

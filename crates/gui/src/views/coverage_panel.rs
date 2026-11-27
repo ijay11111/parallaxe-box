@@ -10,7 +10,7 @@ use crate::layout::ViewportTier;
 use crate::state::AppState;
 use crate::theme::{
     card_frame, render_pill, spaced_columns, subtle_well_frame, Palette, ThemeMode, FONT_BODY,
-    FONT_META, FONT_TITLE, RADIUS_MD, SPACE_1, SPACE_2, SPACE_3, SPACE_4,
+    FONT_META, FONT_TITLE, RADIUS_MD, SPACE_2, SPACE_3, SPACE_4,
 };
 use crate::views::UiAction;
 
@@ -28,11 +28,9 @@ pub fn render(
         card_frame(p).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(
-                RichText::new(
-                    "尚无覆盖快照；启动运行或离线 Fixture 后将在此列出本次覆盖与未覆盖两栏。",
-                )
-                .size(FONT_BODY)
-                .color(p.text_secondary),
+                RichText::new("尚无覆盖快照；启动检测或离线演示后将在此列出本次覆盖与未覆盖两栏。")
+                    .size(FONT_BODY)
+                    .color(p.text_secondary),
             );
         });
         return;
@@ -42,7 +40,7 @@ pub fn render(
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new(format!(
-                    "尚未收到 CoverageUpdated 快照（当前预检选中 {} / 获准 {} / 跳过 {}）。",
+                    "尚未收到覆盖快照（当前预检选中 {} / 获准 {} / 跳过 {}）。",
                     run.selected_ids.len(),
                     run.admitted_ids.len(),
                     run.skipped.len()
@@ -276,7 +274,7 @@ fn render_uncovered_card(
                         egui::Grid::new("uncovered_table_grid")
                             .num_columns(3)
                             .striped(true)
-                            .spacing([SPACE_3, SPACE_1 + 2.0])
+                            .spacing([SPACE_3, SPACE_2])
                             .min_col_width(68.0)
                             .show(ui, |ui| {
                                 ui.label(
@@ -339,8 +337,7 @@ fn render_uncovered_card(
                                                 .color(p.text_primary),
                                         )
                                         .wrap_mode(egui::TextWrapMode::Extend),
-                                    )
-                                    .on_hover_text(&item.reason);
+                                    );
                                     ui.end_row();
                                 }
                             });

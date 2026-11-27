@@ -182,12 +182,90 @@ pub fn cases() -> Vec<FixtureCase> {
     list
 }
 
+// Additional cross-format acceptance samples, separate from the stable selftest baseline.
+const DIAGNOSTICS: [&str; 4] = [
+    "address-mismatch",
+    "address-proxy",
+    "product-restricted",
+    "product-blocked",
+];
+fn diagnostic_case(id: &str) -> Option<FixtureCase> {
+    let mut case = cases().into_iter().find(|c| c.id == "gemini-positive")?;
+    case.id = *DIAGNOSTICS.iter().find(|s| **s == id)?;
+    case.case = case.id;
+    case.description = "Synthetic destination / first-party policy observation";
+    let policy = match id {
+        "product-restricted" => Some((
+            400,
+            "FAILED_PRECONDITION",
+            "User location is not supported for the API use.",
+            State::Restricted,
+            "REGION_RESTRICTED",
+        )),
+        "product-blocked" => Some((
+            451,
+            "PERMISSION_DENIED",
+            "Unavailable For Legal Reasons",
+            State::Blocked,
+            "POLICY_BLOCKED",
+        )),
+        _ => None,
+    };
+    if let Some((status, token, message, state, reason)) = policy {
+        case.target_id = "google.models";
+        case.sample = sample(
+            status,
+            "application/json",
+            None,
+            &serde_json::json!({"error":{"code":status,"status":token,"message":message}})
+                .to_string(),
+            false,
+        );
+        case.expected_state = state;
+        case.expected_reason = Some(reason);
+        case.expected_country = None;
+    }
+    Some(case)
+}
+
+impl FixtureCase {
+    pub(crate) fn destination(&self) -> crate::destination::Destination {
+        let proxy = match self.id {
+            "address-proxy" => true,
+            "address-mismatch" => false,
+            _ => return Default::default(),
+        };
+        let book = crate::destination::AddressBook::parse(
+            "192.0.2.0/24,US,64496\n203.0.113.0/24,CN,64497",
+        )
+        .expect("documentation prefixes");
+        crate::destination::Destination::observe(
+            if proxy {
+                vec![]
+            } else {
+                vec!["192.0.2.8".parse().unwrap()]
+            },
+            Some("203.0.113.9".parse().unwrap()),
+            proxy,
+            &book,
+            Some("US"),
+        )
+    }
+}
+
 /// 按案例 ID 查找。
 pub fn find(id: &str) -> Option<FixtureCase> {
-    cases().into_iter().find(|case| case.id == id)
+    cases()
+        .into_iter()
+        .find(|case| case.id == id)
+        .or_else(|| diagnostic_case(id))
 }
 
 /// 案例 ID 列表（用于错误提示）。
 pub fn case_ids() -> Vec<&'static str> {
-    cases().iter().map(|case| case.id).collect()
+    cases()
+        .iter()
+        .map(|case| case.id)
+        .chain(DIAGNOSTICS)
+        .collect()
 }

@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# 仅由正式发行流水线显式开启；源码 cargo build / cargo build --release 默认不带。
+distribution-release = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +21,7 @@ sha2.workspace = true
 url.workspace = true
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 crc32fast = "1"
+ipnet = "2"
 
 # Web/WASM 端：tokio 只保留官方支持的特性（无 net / io-std / multi-thread）；
 # comfy-table 关闭 tty（crossterm 在 wasm 上不可用）。

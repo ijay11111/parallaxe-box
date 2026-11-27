@@ -151,6 +151,7 @@ pub fn detect_local_qos_against(
         .iter()
         .filter(|point| point.timed_out)
         .map(|point| point.airport.as_str())
+        .filter(|name| !name.is_empty())
         .collect();
     airports.sort_unstable();
     airports.dedup();
@@ -268,6 +269,8 @@ pub struct ContractResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractOutcome {
     Matched { region: String },
+    RegionRestricted,
+    PolicyBlocked,
     NoRegionSignal,
     Challenge,
     RateLimited { status: u16 },
@@ -284,6 +287,8 @@ impl ContractOutcome {
     pub fn as_str(&self) -> &'static str {
         match self {
             ContractOutcome::Matched { .. } => "MATCHED",
+            ContractOutcome::RegionRestricted => "REGION_RESTRICTED",
+            ContractOutcome::PolicyBlocked => "POLICY_BLOCKED",
             ContractOutcome::NoRegionSignal => "NO_REGION_SIGNAL",
             ContractOutcome::Challenge => "CHALLENGE",
             ContractOutcome::RateLimited { .. } => "RATE_LIMITED",
@@ -337,8 +342,16 @@ pub fn evaluate_contract(
     if response.redirects > contract.max_redirects {
         return ContractOutcome::RedirectOutOfRange;
     }
+    if let Some(policy) = product_policy(&contract.target_id, response) {
+        return policy;
+    }
     if !contract.expected_status.contains(&response.status) {
         return ContractOutcome::StatusUnexpected;
+    }
+    if response.content_type.is_none() && !contract.allowed_content_types.is_empty() {
+        return ContractOutcome::StructureMismatch {
+            missing: "CONTENT_TYPE".into(),
+        };
     }
     if let Some(content_type) = &response.content_type {
         if !contract.allowed_content_types.is_empty()
@@ -370,6 +383,191 @@ pub fn evaluate_contract(
         },
         _ => ContractOutcome::NoRegionSignal,
     }
+}
+
+/// A denial must describe this request on the product's own, bounded first response.
+/// Match entire structured fields, never translation resources or text snippets in a page.
+fn product_policy(target_id: &str, r: &ContractResponse) -> Option<ContractOutcome> {
+    if r.body_truncated || r.redirects != 0 || r.body.len() > 32 * 1024 {
+        return None;
+    }
+    let mime = r.content_type.as_deref()?.split(';').next()?.trim();
+    if (target_id, r.final_host.as_str()) == ("google.gemini", "support.google.com")
+        && r.status == 200
+        && mime.eq_ignore_ascii_case("text/html")
+    {
+        // Standalone denial surface. Ignore HTML with scripts, templates, samples or other text.
+        static DENIAL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let heading = DENIAL.get_or_init(||regex::Regex::new(r"(?i)^\s*(?:<!doctype html>\s*)?<html>\s*<body>\s*<main>\s*<h1>\s*Gemini (?:is not available|isn['’]t (?:currently )?supported) in your country\.?\s*</h1>\s*</main>\s*</body>\s*</html>\s*$").expect("constant regex"));
+        return heading
+            .is_match(&r.body)
+            .then_some(ContractOutcome::RegionRestricted);
+    }
+    if !matches!(target_id, "google.gen-api" | "google.models")
+        || r.final_host != "generativelanguage.googleapis.com"
+        || !mime.eq_ignore_ascii_case("application/json")
+    {
+        return None;
+    }
+    let payload: serde_json::Value = serde_json::from_str(&r.body).ok()?;
+    let error = payload.get("error")?;
+    if error.get("code")?.as_u64()? != u64::from(r.status) {
+        return None;
+    }
+    match (
+        r.status,
+        error.get("status")?.as_str()?,
+        error.get("message")?.as_str()?,
+    ) {
+        (400, "FAILED_PRECONDITION", "User location is not supported for the API use.") => {
+            Some(ContractOutcome::RegionRestricted)
+        }
+        (451, "PERMISSION_DENIED", "Unavailable For Legal Reasons") => {
+            Some(ContractOutcome::PolicyBlocked)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn policy_product(url: &str) -> Option<&'static str> {
+    match url {
+        "https://generativelanguage.googleapis.com/v1beta/models"
+        | "https://generativelanguage.googleapis.com/v1/models" => Some("google.models"),
+        "https://generativelanguage.googleapis.com/" => Some("google.gen-api"),
+        "https://support.google.com/gemini/" => Some("google.gemini"),
+        _ => None,
+    }
+}
+
+/// Evaluate the first-party policy contract before reducing evidence to a verdict.
+/// An imported alias must match an exact canonical HTTPS URL.
+pub(crate) fn policy_outcome(
+    target: &crate::targets::Target,
+    sample: &crate::signals::Sample,
+) -> Option<ContractOutcome> {
+    let product = policy_product(&target.raw.url)?;
+    if !sample.complete
+        || sample.truncated
+        || sample.location.is_some()
+        || sample.body.len() > 32 * 1024
+    {
+        return None;
+    }
+    let response = ContractResponse {
+        final_host: target.host(),
+        redirects: 0,
+        status: sample.status?,
+        content_type: sample.mime(),
+        body: sample.text(),
+        region: None,
+        body_truncated: false,
+    };
+    product_policy(product, &response)
+}
+
+/// Only versioned catalog surfaces carry a service-specific contract. A Location header
+/// is never a visited host: this transport returns the first response without redirects.
+pub(crate) fn service_contract_marker(
+    target: &crate::targets::Target,
+    sample: &crate::signals::Sample,
+    result: &ResultRecord,
+) -> Option<String> {
+    let status = sample.status?;
+    if let Some(e) = crate::signals::policy_evidence(&result.evidence) {
+        return Some(format!("SERVICE_CONTRACT_{}", e.value.as_str()?));
+    }
+    let (url, source, marker) = match target.id() {
+        "google.gemini" => (
+            "https://support.google.com/gemini/",
+            RegionSignalSource::InlineCountryCode,
+            "window.wiz_global_data",
+        ),
+        "google.youtube" => (
+            "https://www.youtube.com/",
+            RegionSignalSource::YouTubeGl,
+            "\"gl\"",
+        ),
+        "google.news" => (
+            "https://news.google.com/",
+            RegionSignalSource::NewsGlCeid,
+            "",
+        ),
+        "google.play" => (
+            "https://play.google.com/store",
+            RegionSignalSource::PlayRegionStructure,
+            "",
+        ),
+        _ => return Some("SERVICE_CONTRACT_UNSPECIFIED".into()),
+    };
+    if target.raw.url != url {
+        return Some("SERVICE_CONTRACT_UNSPECIFIED".into());
+    }
+    let news = source == RegionSignalSource::NewsGlCeid;
+    let contract = ServiceContract {
+        target_id: target.id().into(),
+        allowed_final_hosts: vec![target.host()],
+        max_redirects: 0,
+        expected_status: if news {
+            vec![301, 302, 303, 307, 308]
+        } else {
+            vec![200]
+        },
+        allowed_content_types: if news {
+            vec![]
+        } else {
+            vec!["text/html".into()]
+        },
+        required_markers: if marker.is_empty() {
+            vec![]
+        } else {
+            vec![marker.into()]
+        },
+        challenge_markers: vec!["unusual traffic".into()],
+        login_markers: vec!["servicelogin".into()],
+        region_source: source,
+        max_body_bytes: target.defaults.max_body_bytes,
+        contract_version: 1,
+        verified_at: target.defaults.verified_at.to_string(),
+    };
+    let region = match source {
+        RegionSignalSource::InlineCountryCode => result.service_observed.observed_country.clone(),
+        _ => {
+            let mut regions = result
+                .evidence
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        (source, e.rule_id.as_str(), e.claim.as_str()),
+                        (RegionSignalSource::YouTubeGl, "rule.yt-gl", "edition.gl")
+                            | (RegionSignalSource::NewsGlCeid, "rule.edition", "edition.gl")
+                            | (
+                                RegionSignalSource::PlayRegionStructure,
+                                "rule.flag",
+                                "store_region_flag"
+                            )
+                    )
+                })
+                .filter_map(|e| e.value.as_str());
+            regions.next().and_then(|first| {
+                regions
+                    .all(|other| other == first)
+                    .then(|| first.to_owned())
+            })
+        }
+    };
+    let response = ContractResponse {
+        final_host: target.host(),
+        redirects: 0,
+        status,
+        content_type: sample.mime(),
+        body: sample.text(),
+        region,
+        body_truncated: sample.truncated || !sample.complete,
+    };
+    Some(format!(
+        "SERVICE_CONTRACT_{}",
+        evaluate_contract(&contract, &response).as_str()
+    ))
 }
 
 /// 连续多次取不到目标预期信号时标记 SIGNAL_STALE（不默默判成正常）。

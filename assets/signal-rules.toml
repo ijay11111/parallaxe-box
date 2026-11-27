@@ -29,6 +29,8 @@ notes = "传输或首跳响应，不声称地区"
 negative_case = "收到 HTTP 不证明产品或国家"
 extract = { kind = "status", pattern = "status", capture = "value" }
 applies_to = [
+  { target_id = "google.home", host = "support.google.com", path = "/websearch/", surface = "Google 搜索帮助中心：页面内联地区码" },
+  { target_id = "google.drive", host = "support.google.com", path = "/drive/", surface = "Google Drive 帮助中心：页面内联地区码" },
   { target_id = "google.accounts", host = "accounts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.signin-id", host = "accounts.google.com", path = "/signin/v2/identifier", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.signin-v3", host = "accounts.google.com", path = "/v3/signin/", surface = "登录入口：首跳主机/状态" },
@@ -43,12 +45,11 @@ applies_to = [
   { target_id = "google.recaptcha", host = "www.gstatic.com", path = "/recaptcha/", surface = "静态/共享根：TLS、HTTP 状态" },
   { target_id = "google.play-account", host = "play.google.com", path = "/store/account", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.gsi", host = "accounts.google.com", path = "/gsi/client", surface = "静态/共享根：TLS、HTTP 状态" },
-  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
   { target_id = "google.search", host = "www.google.com", path = "/search", surface = "搜索入口：是否明确标来源" },
   { target_id = "google.images", host = "images.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
   { target_id = "google.maps", host = "maps.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
   { target_id = "google.news", host = "news.google.com", path = "/", surface = "版次跳转：Location 中 hl/gl/ceid" },
-  { target_id = "google.books", host = "books.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.books", host = "support.google.com", path = "/books/", surface = "Google 图书帮助中心：页面内联地区码" },
   { target_id = "google.scholar", host = "scholar.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
   { target_id = "google.trends", host = "trends.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
   { target_id = "google.shopping", host = "shopping.google.com", path = "/", surface = "展示入口：Location 主机/公开版次参数" },
@@ -63,8 +64,7 @@ applies_to = [
   { target_id = "google.sheets", host = "docs.google.com", path = "/spreadsheets/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.slides", host = "docs.google.com", path = "/presentation/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.forms", host = "docs.google.com", path = "/forms/", surface = "登录入口：首跳主机/状态" },
-  { target_id = "google.drive", host = "drive.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
-  { target_id = "google.gmail", host = "mail.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.gmail", host = "support.google.com", path = "/mail/", surface = "Gmail 帮助中心：页面内联地区码" },
   { target_id = "google.calendar", host = "calendar.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.meet", host = "meet.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.chat", host = "chat.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
@@ -77,7 +77,7 @@ applies_to = [
   { target_id = "google.voice", host = "voice.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.one", host = "one.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
   { target_id = "google.takeout", host = "takeout.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
-  { target_id = "google.gemini", host = "gemini.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.gemini", host = "support.google.com", path = "/gemini/", surface = "Gemini 帮助中心：页面内联地区码" },
   { target_id = "google.gemini-mobile", host = "support.google.com", path = "/gemini/answer/14579026", surface = "公开说明/目录：状态或新入口" },
   { target_id = "google.studio", host = "aistudio.google.com", path = "/", surface = "公开资格入口：HTTP/明确门槛说明" },
   { target_id = "google.gemini-doc", host = "ai.google.dev", path = "/gemini-api/docs", surface = "公开说明/目录：状态或新入口" },
@@ -225,8 +225,6 @@ applies_to = [
   { target_id = "google.sheets", host = "docs.google.com", path = "/spreadsheets/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.slides", host = "docs.google.com", path = "/presentation/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.forms", host = "docs.google.com", path = "/forms/", surface = "登录入口：首跳主机/状态" },
-  { target_id = "google.drive", host = "drive.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
-  { target_id = "google.gmail", host = "mail.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.calendar", host = "calendar.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.meet", host = "meet.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
   { target_id = "google.chat", host = "chat.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
@@ -339,10 +337,58 @@ notes = "未公开的页面内联片段，不证明资格"
 negative_case = "截断或非预期表面不匹配；三字码不证明资格"
 extract = { kind = "regex", pattern = ",2,1,200,\"([A-Z]{3})\"", capture = "1" }
 applies_to = [
-  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
-  { target_id = "google.books", host = "books.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
-  { target_id = "google.gemini", host = "gemini.google.com", path = "/", surface = "页面内联：,2,1,200 后三字码" },
+  { target_id = "google.home", host = "support.google.com", path = "/websearch/", surface = "Google 搜索帮助中心：页面内联地区码" },
+  { target_id = "google.drive", host = "support.google.com", path = "/drive/", surface = "Google Drive 帮助中心：页面内联地区码" },
+  { target_id = "google.gmail", host = "support.google.com", path = "/mail/", surface = "Gmail 帮助中心：页面内联地区码" },
+  { target_id = "google.books", host = "support.google.com", path = "/books/", surface = "Google 图书帮助中心：页面内联地区码" },
+  { target_id = "google.gemini", host = "support.google.com", path = "/gemini/", surface = "Gemini 帮助中心：页面内联地区码" },
   { target_id = "google.preferences", host = "www.google.com", path = "/preferences", surface = "页面内联：,2,1,200 后三字码" },
+]
+
+[[rules]]
+id = "rule.tos-loc"
+version = 1
+enabled = true
+layer = "SERVICE_POLICY"
+channel = "SERVICE"
+credibility = "MEDIUM"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "Google 服务条款链接按访问 IP 动态生成的 loc 地区参数；实测 accounts/drive 页脚 TOS?loc=XX 与出口地区一致"
+negative_case = "用户自带 loc 参数不算观察；不证明账号国家或订阅资格"
+extract = { kind = "regex", pattern = "accounts\\.google\\.com/TOS\\?loc=([A-Z]{2})", capture = "1" }
+applies_to = [
+  { target_id = "google.accounts", host = "accounts.google.com", path = "/", surface = "登录入口：首跳主机/状态" },
+  { target_id = "google.one", host = "one.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+]
+
+[[rules]]
+id = "rule.one-region"
+version = 1
+enabled = true
+layer = "SERVICE_POLICY"
+channel = "SERVICE"
+credibility = "MEDIUM"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "Google One 地区选择按钮按访问 IP 显示当前地区（aria-label）；实测研究型 UA 可读"
+negative_case = "用户手动选区不算观察；该值按 IP 变化，不代表账号订阅地区"
+extract = { kind = "regex", pattern = "aria-label=\"([A-Za-z ]+)\\. Choose your country or region", capture = "1" }
+applies_to = [
+  { target_id = "google.one", host = "one.google.com", path = "/", surface = "公开说明/目录：状态或新入口" },
+]
+
+[[rules]]
+id = "rule.play-footer"
+version = 1
+enabled = true
+layer = "SERVICE_POLICY"
+channel = "SERVICE"
+credibility = "MEDIUM"
+source_grade = "DIRECT_ANONYMOUS_OBSERVATION"
+notes = "Play 商店页脚按访问 IP 显示的国家/语言（如 China (English (United States))）；实测研究型 UA 可读"
+negative_case = "账号登录后地区跟账号走；匿名仅反映 IP 侧展示，不代表 Play 账号国家"
+extract = { kind = "regex", pattern = ">([A-Z][a-zA-Z ]+ \\(English[^<]*\\))</div>", capture = "1" }
+applies_to = [
+  { target_id = "google.play", host = "play.google.com", path = "/store", surface = "商店 HTML：国旗资源及配对文案" },
 ]
 
 [[rules]]
@@ -449,5 +495,4 @@ notes = "已失效的首页选择器；即使旧样本含该属性也不产生�
 negative_case = "有无该旧属性都必须零产出"
 extract = { kind = "regex", pattern = "name=\"region\"", capture = "value" }
 applies_to = [
-  { target_id = "google.home", host = "www.google.com", path = "/", surface = "首页 HTML：旧 region 与内联三字码" },
 ]

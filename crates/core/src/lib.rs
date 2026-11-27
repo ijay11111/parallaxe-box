@@ -5,7 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ai_bridge;
 pub mod contracts;
+pub mod destination;
+pub mod distribution;
 pub mod eligibility;
 pub mod events;
 pub mod fixtures;
@@ -16,11 +20,15 @@ pub mod i18n;
 pub mod import_bundle;
 pub mod linkcheck;
 pub mod network;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod plugins;
 pub mod probe;
+pub mod proxy;
 pub mod reports;
 pub mod runtime;
 pub mod schedule;
 pub mod selftest;
+pub mod settings;
 pub mod signals;
 pub mod state;
 pub mod sysblock;
@@ -37,6 +45,7 @@ pub use contracts::{
 };
 pub use eligibility::{EligibilityCategory, EligibilityNote};
 pub use i18n::{translate, Locale};
+pub use proxy::{ProxyMode, PAC_LIMITATIONS};
 pub use runtime::{run_check, CheckOptions, RunOutput};
 pub use targets::{
     Admission, Budget, ConfigError, LoadPaths, Profile, Registry, Selection, Target, HARD_LIMITS,

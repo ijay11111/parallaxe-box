@@ -65,7 +65,7 @@ browser_profile_sources = []
 
 ### 4.1 `--state-dir`（默认完全关闭）
 - **默认零写盘**：不发现、不创建、不读取家目录或环境变量中的隐藏状态文件夹。
-- **显式授权才写入**：仅当用户在命令行显式传入 `--state-dir <本地目录>`（且非 `--fixture`/`--selftest`、非 Agent 单条请求）时，写入去标识化的 `freshness-v1.json`，拒绝符号链接/重解析点。详见 [signals.md](signals.md#4-signal_stale-规则新鲜度机制n3-与---state-dir)。
+- **显式授权才写入**：仅当用户在命令行显式传入 `--state-dir <本地目录>`（且非 `--fixture`/`--selftest`、非 Agent 单条请求）时，写入去标识化的 `freshness-v1.json`，拒绝符号链接/重解析点。详见 [signals.md](signals.md#signal-freshness)。
 
 ### 4.2 自定义网址与检查方式导入（GUI F1–F5）
 - 导入的自定义目标强制隔离在 `user.*` 命名空间，默认 `allow_online = false`、`protected = true`；

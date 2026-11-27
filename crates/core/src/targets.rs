@@ -58,8 +58,10 @@ pub struct HardLimits {
     pub v6_fallback_after_ms: u64,
     pub max_run_timeout_ms: u64,
     pub max_request_timeout_ms: u64,
-    /// T-7-09a：同 host / 同节点 / 同协议的发送间隔上限。
+    /// 同 host / 同节点 / 同协议的发送间隔上限（网络检测；用户裁定可到 10s）。
     pub max_min_interval_ms: u64,
+    /// 跨目标（不同 host）检验之间的间隔上限，与同目标上限一致（10s）。
+    pub max_inter_target_interval_ms: u64,
     /// 单个小批次的节点/请求数上限。
     pub max_batch_size: u32,
     /// UDP/QUIC 全局并发上限（低噪声硬限）。
@@ -78,12 +80,15 @@ pub const HARD_LIMITS: HardLimits = HardLimits {
     per_host: 2,
     logical_gets_per_target: 1,
     extra_attempts_per_target: 1,
-    max_redirects: 0,
+    // 上限 2：全局默认仍为 0（不跟跳）；仅单个目标显式声明时才允许有限跳转。
+    max_redirects: 2,
     max_body_bytes: 16_777_216,
     v6_fallback_after_ms: 8000,
     max_run_timeout_ms: 120_000,
-    max_request_timeout_ms: 12_000,
-    max_min_interval_ms: 5000,
+    // 30s：基础 10s + 最多 2 跳各 10s；非跳转目标仍用 profile 的 10s 基础预算。
+    max_request_timeout_ms: 30_000,
+    max_min_interval_ms: 10000,
+    max_inter_target_interval_ms: 10000,
     max_batch_size: 15,
     max_udp_quic_concurrency: 1,
     max_tcp_concurrency: 4,
@@ -164,6 +169,10 @@ pub struct RawTarget {
     pub safe_default: bool,
     #[serde(default)]
     pub observed_redirect_host: Option<String>,
+    /// 本目标允许的最大跳转次数；不填则用 [defaults] 的全局值。
+    /// 只跟随同域跳转，且只读取匿名公开页的地区展示字段；不登录、无 Cookie。
+    #[serde(default)]
+    pub max_redirects: Option<u32>,
 }
 
 /// 运行期目标：注册行 + 合并后的默认值。
@@ -184,6 +193,11 @@ impl Target {
             .or_else(|_| parse_user_http_or_https_url(&self.raw.url, true).map(|(u, _)| u))
             .map(|u| u.host)
             .unwrap_or_default()
+    }
+
+    /// 本目标生效的最大跳转次数：注册行优先，否则用全局默认值。
+    pub fn max_redirects(&self) -> u32 {
+        self.raw.max_redirects.unwrap_or(self.defaults.max_redirects)
     }
 
     /// 注册 URL 的路径（含前导斜杠，不含查询）。
@@ -409,6 +423,8 @@ pub struct ProfileLimits {
     #[serde(default)]
     pub min_interval_ms: u64,
     #[serde(default)]
+    pub inter_target_interval_ms: u64,
+    #[serde(default)]
     pub batch_size: u32,
     #[serde(default)]
     pub udp_quic_concurrency: u32,
@@ -501,7 +517,11 @@ pub struct Registry {
     builtin_rule_ids: HashSet<String>,
     user_targets: BTreeMap<String, UserTargetMeta>,
     user_rules: BTreeMap<String, UserRuleMeta>,
+    /// 永久授权的"更换内置目标"用户目标（仅这些精确 URL/规则可通过 admission 直接放行）。
+    authorized_user_targets: BTreeMap<String, UserTargetAuthorization>,
     active_session_grant: std::sync::Arc<std::sync::Mutex<Option<SessionGrant>>>,
+    /// 当前运行是否处于发行包模式。正式发行构建恒为 true；源码构建默认 false。
+    distribution_mode: bool,
 }
 
 fn parse_targets(text: &str, location: &str) -> Result<TargetsFile, ConfigError> {
@@ -650,7 +670,9 @@ impl Registry {
             builtin_rule_ids,
             user_targets: BTreeMap::new(),
             user_rules: BTreeMap::new(),
+            authorized_user_targets: BTreeMap::new(),
             active_session_grant: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            distribution_mode: crate::distribution::DISTRIBUTION_RELEASE_BUILD,
         })
     }
 
@@ -662,6 +684,33 @@ impl Registry {
     /// 目录条目数（135）。
     pub fn catalog_size(&self) -> usize {
         self.entries.len()
+    }
+
+    /// 当前是否处于发行包模式。
+    pub fn distribution_mode(&self) -> bool {
+        self.distribution_mode
+    }
+
+    /// 切换源码构建的发行包模式。
+    ///
+    /// 正式发行构建由编译期 feature 恒定为开启，任何运行时调用都不能关闭；
+    /// 源码构建只有在用户完成「关于软件」确认框后才应传入 `true`。
+    pub fn set_distribution_mode(&mut self, enabled: bool) {
+        self.distribution_mode = crate::distribution::DISTRIBUTION_RELEASE_BUILD || enabled;
+    }
+
+    /// 是否为内嵌目录中的内置目标（不含外部覆盖层新增目标与运行时导入的用户目标）。
+    pub fn is_embedded_builtin_target(&self, target_id: &str) -> bool {
+        self.by_id.get(target_id).is_some_and(|index| {
+            *index < self.base_target_count
+                && !self.user_targets.contains_key(target_id)
+                && !self.external_target_ids.contains(target_id)
+        })
+    }
+
+    /// 是否为发行包模式可放行的内嵌 Google 目标（严格限定 107 项，不含 control.*）。
+    pub fn is_embedded_google_target(&self, target_id: &str) -> bool {
+        target_id.starts_with("google.") && self.is_embedded_builtin_target(target_id)
     }
 
     /// 按 ID 查询。
@@ -721,12 +770,42 @@ impl Registry {
     }
 
     /// 准入判定：选中 ∧ 许可 ∧ allow_online ∧（隐式默认时 safe_default）∧ 规则版本匹配。
+    /// 发行包模式只对内嵌内置目录解除 `allow_online` / 静态 grant 门禁；普通导入目标仍走 F3。
     pub fn admission(&self, target: &Target, implicit_default: bool, now: &str) -> Admission {
+        if implicit_default && !target.raw.safe_default {
+            return Admission::deny("DENIED_SAFE_DEFAULT_FALSE", reason::SAFE_DEFAULT_FALSE);
+        }
+        if self.distribution_mode && self.is_embedded_google_target(target.id()) {
+            return Admission::allow();
+        }
+        if self.authorized_user_targets.contains_key(target.id()) && !self.distribution_mode {
+            return Admission::deny("DENIED_DISTRIBUTION_MODE_OFF", reason::NO_ADMISSION);
+        }
         if !target.raw.allow_online {
             return Admission::deny("DENIED_ALLOW_ONLINE_FALSE", reason::ALLOW_ONLINE_FALSE);
         }
-        if implicit_default && !target.raw.safe_default {
-            return Admission::deny("DENIED_SAFE_DEFAULT_FALSE", reason::SAFE_DEFAULT_FALSE);
+        // 永久授权的"更换内置目标"用户目标：仅对精确 URL/表面 + 规则版本一致的目标放行。
+        // 该分支只可能由用户在默认规则包专属确认框里显式授权后写入，不会影响内置目标。
+        if let Some(auth) = self.authorized_user_targets.get(&target.raw.id) {
+            if !self.user_targets.contains_key(&target.raw.id) {
+                return Admission::deny("DENIED_NO_GRANT", reason::NO_ADMISSION);
+            }
+            if auth.exact_url != target.raw.url || auth.surface != target.raw.surface {
+                return Admission::deny("DENIED_GRANT_SURFACE_MISMATCH", reason::ADMISSION_SURFACE);
+            }
+            let active_rules = self.rules_for(target);
+            if active_rules.is_empty() {
+                return Admission::deny("DENIED_NO_GRANT", reason::NO_ADMISSION);
+            }
+            for rule in active_rules {
+                if auth.rule_versions.get(&rule.id).copied() != Some(rule.version) {
+                    return Admission::deny(
+                        "DENIED_GRANT_RULE_VERSION_MISMATCH",
+                        reason::ADMISSION_RULE_VERSION,
+                    );
+                }
+            }
+            return Admission::allow();
         }
         let Some(grant) = self
             .grants
@@ -910,6 +989,8 @@ pub struct Budget {
     pub v6_fallback_after_ms: u64,
     /// 同一 host / 节点 / 协议 / 会话类型的发送间隔（起始 3–5 秒）。
     pub min_interval_ms: u64,
+    /// 跨目标（不同 host）检验之间的间隔（0=不额外延迟；可调，上限 10s）。
+    pub inter_target_interval_ms: u64,
     /// 小批次大小（≤15；UDP/QUIC 建议 3–5）。
     pub batch_size: u32,
     /// UDP/QUIC 全局并发（起始 1）。
@@ -934,6 +1015,7 @@ impl Default for Budget {
             v6_fallback_after_ms: HARD_LIMITS.v6_fallback_after_ms,
             // 低噪声安全默认：宁可慢，也不因过密发包污染本地网络。
             min_interval_ms: 3_500,
+            inter_target_interval_ms: 0,
             batch_size: 5,
             udp_quic_concurrency: 1,
             tcp_concurrency: 3,
@@ -1050,8 +1132,8 @@ fn validate_targets(file: &TargetsFile, rules: &RulesFile) -> Result<(), ConfigE
             .map_err(|message| ConfigError::field(location.clone(), message))?;
         if let Some(query) = url.query.as_deref() {
             // 只接受注册表中已固定的常量查询；不接受任意查询串。
-            let allowed =
-                raw.id == "google.play-detail" && query == "id=com.google.android.youtube";
+            let allowed = (raw.id == "google.play-detail" && query == "id=com.google.android.youtube")
+                || (raw.id == "google.gmail" && query == "id=com.google.android.gm");
             if !allowed {
                 return Err(ConfigError::field(location.clone(), "未登记的查询串"));
             }
@@ -1241,8 +1323,8 @@ fn validate_profiles(profiles: &ProfilesFile, targets: &TargetsFile) -> Result<(
                 ));
             }
         }
-        if profile.run_timeout_ms == 0
-            || profile.run_timeout_ms > HARD_LIMITS.max_run_timeout_ms
+        // run_timeout_ms = 0 合法：表示"不限时"（只受单请求超时与 QoS 约束）。
+        if profile.run_timeout_ms > HARD_LIMITS.max_run_timeout_ms
             || profile.request_timeout_ms == 0
             || profile.request_timeout_ms > HARD_LIMITS.max_request_timeout_ms
         {
@@ -1680,6 +1762,44 @@ impl InspectionCategory {
     }
 }
 
+/// 用户自定义导入的默认展示分组名（仅影响展示与筛选，不影响判定与许可闸门）。
+pub const DEFAULT_USER_GROUP: &str = "我的导入";
+
+fn default_user_group() -> String {
+    DEFAULT_USER_GROUP.to_string()
+}
+
+/// 校验并归一化用户自定义分组名称（独立于内置 `google` / `control` 命名空间）。
+pub fn normalize_user_group(raw: Option<&str>) -> Result<String, ConfigError> {
+    let Some(trimmed) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(DEFAULT_USER_GROUP.to_string());
+    };
+    if trimmed.chars().count() > 48 {
+        return Err(ConfigError::field(
+            "user_group",
+            "自定义分组名称长度不得超过 48 个字符",
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(ConfigError::field(
+            "user_group",
+            "自定义分组名称不得包含控制字符",
+        ));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "google"
+        || lower.starts_with("google.")
+        || lower == "control"
+        || lower.starts_with("control.")
+    {
+        return Err(ConfigError::field(
+            "user_group",
+            "自定义分组必须独立于内置 google / control 命名空间",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 /// 用户导入目标的审计与留痕元数据。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserTargetMeta {
@@ -1687,12 +1807,21 @@ pub struct UserTargetMeta {
     pub url: String,
     pub surface: String,
     pub signals: Vec<String>,
+    /// 用户自主归类分组（仅用于展示与筛选，默认"我的导入"，绝不影响判定或准入）。
+    #[serde(default = "default_user_group")]
+    pub user_group: String,
     pub origin: String,
     pub consent_version: String,
     pub imported_at: String,
     pub rule_digest: String,
     pub allow_insecure_http: bool,
     pub http_warning: Option<String>,
+    /// 若本目标用于"更换"某个内置目标，记录被更换的内置目标 ID（仅审计与展示，不改变判定）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_builtin_id: Option<String>,
+    /// 被更换的内置目标是否为受保护目标（批量更换需二次明确确认）。
+    #[serde(default)]
+    pub replaces_protected: bool,
 }
 
 /// 用户导入检查方式（规则）的审计与留痕元数据。
@@ -1717,6 +1846,61 @@ pub struct UserTargetImportInput {
     pub surface: Option<String>,
     pub signals: Vec<String>,
     pub allow_insecure_http: bool,
+    #[serde(default)]
+    pub user_group: Option<String>,
+}
+
+/// 用户对某个"更换内置目标"的用户目标所持有的显式在线授权（永久范围）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserTargetAuthorization {
+    pub target_id: String,
+    pub exact_url: String,
+    pub surface: String,
+    #[serde(default)]
+    pub rule_versions: BTreeMap<String, u64>,
+    pub rule_digest: String,
+    pub consent_version: String,
+    pub granted_at: String,
+    /// 授权来源（当前仅发行包默认规则包）。
+    pub source: String,
+}
+
+/// 永久授权写入用户状态目录时使用的单条目标快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedDefaultBundleTarget {
+    pub id: String,
+    pub url: String,
+    pub surface: String,
+    pub signals: Vec<String>,
+    pub user_group: String,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+    pub replaced_builtin_id: String,
+    #[serde(default)]
+    pub rule_versions: BTreeMap<String, u64>,
+}
+
+/// 默认规则包永久授权文件（`parallaxe.default-bundle-consent/v1`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefaultBundleConsentFile {
+    pub schema: String,
+    pub consent_version: String,
+    pub granted_at: String,
+    /// 当前仅支持 `PERMANENT`（`SESSION` 不落盘）。
+    pub mode: String,
+    #[serde(default)]
+    pub targets: Vec<PersistedDefaultBundleTarget>,
+}
+
+/// 默认规则包授权范围的单条精确边界（ID、URL、表面、规则摘要、规则版本）。
+pub type DefaultBundleScopeEntry = (String, String, String, String, BTreeMap<String, u64>);
+
+/// 恢复用户状态目录时的结果摘要。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserStateRestoreReport {
+    pub restored_targets: usize,
+    pub authorized_targets: usize,
+    pub skipped_targets: usize,
 }
 
 /// 一次性会话级在线许可（仅对单次 run 的精确用户导入目标与规则有效）。
@@ -2035,6 +2219,23 @@ impl Registry {
         self.user_targets.get(target_id)
     }
 
+    /// 返回当前已登记的用户自定义分组名清单（按名称稳定排序去重）。
+    pub fn user_groups(&self) -> Vec<String> {
+        let groups: std::collections::BTreeSet<String> = self
+            .user_targets
+            .values()
+            .map(|m| m.user_group.clone())
+            .collect();
+        groups.into_iter().collect()
+    }
+
+    /// 查询指定用户目标所属的自定义分组名（内置目标返回 `None`）。
+    pub fn user_group_of(&self, target_id: &str) -> Option<&str> {
+        self.user_targets
+            .get(target_id)
+            .map(|m| m.user_group.as_str())
+    }
+
     /// 若目标或所绑定规则包含用户导入项，返回 `(origin, consent_version, imported_at, rule_digest)`。
     pub fn user_audit_for(&self, target: &Target) -> Option<(String, String, String, String)> {
         if let Some(meta) = self.user_targets.get(&target.raw.id) {
@@ -2256,10 +2457,21 @@ impl Registry {
     }
 
     /// F1：导入单个用户自定义网址并绑定所选检查方式，强制要求勾选责任声明；默认 `allow_online=false`、`safe_default=false`。
+    /// 重复网址默认硬拒绝；批量"更换"路径请调用 `import_user_target_replacing`。
     pub fn import_user_target(
         &mut self,
         input: UserTargetImportInput,
         consent_accepted: bool,
+    ) -> Result<UserTargetMeta, ConfigError> {
+        self.import_user_target_replacing(input, consent_accepted, false)
+    }
+
+    /// F1：导入单个用户自定义网址；`replace_existing=true` 时允许"更换"同 URL 的内置/用户目标。
+    pub fn import_user_target_replacing(
+        &mut self,
+        input: UserTargetImportInput,
+        consent_accepted: bool,
+        replace_existing: bool,
     ) -> Result<UserTargetMeta, ConfigError> {
         if !consent_accepted {
             return Err(ConfigError::field(
@@ -2282,13 +2494,11 @@ impl Registry {
             _ => format!("{scheme}{}{}", parsed_url.host, parsed_url.path),
         };
 
-        // 拒绝重复 URL（含内置目标与已导入目标）
-        if self.entries.iter().any(|e| e.raw.url == normalized_url) {
-            return Err(ConfigError::field(
-                "url",
-                format!("网址已存在于目录中：{normalized_url}"),
-            ));
-        }
+        // 重复 URL 不再硬拒绝：记录候选，等 ID/检查方式解析后由 `replace_existing` 决定是否更换。
+        let duplicate_idx = self
+            .entries
+            .iter()
+            .position(|e| e.raw.url == normalized_url);
 
         // 生成或校验目标 ID（强制 `user.` 命名空间，防止冒充内置 `google.*` 或 `control.*`）
         let id = match input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -2332,6 +2542,48 @@ impl Registry {
             }
         };
 
+        let mut replaced_builtin_id: Option<String> = None;
+        let mut replaces_protected = false;
+        if let Some(idx) = duplicate_idx {
+            let dup_id = self.entries[idx].raw.id.clone();
+            let dup_is_user = self.user_targets.contains_key(&dup_id);
+            if dup_is_user {
+                let idempotent = dup_id == id
+                    && self.user_targets.get(&id).is_some_and(|meta| {
+                        let mut current = meta.signals.clone();
+                        let mut incoming: Vec<String> =
+                            input.signals.iter().map(|s| s.trim().to_string()).collect();
+                        current.sort();
+                        current.dedup();
+                        incoming.sort();
+                        incoming.dedup();
+                        meta.url == normalized_url && current == incoming
+                    });
+                if idempotent {
+                    if let Some(meta) = self.user_targets.get(&id) {
+                        return Ok(meta.clone());
+                    }
+                }
+                if !replace_existing {
+                    return Err(ConfigError::field(
+                        "url",
+                        format!("网址已由用户目标 {dup_id} 导入；如需更换请显式确认"),
+                    ));
+                }
+                // 用新条目替换旧用户目标，避免同一 URL 出现两个用户目标。
+                self.remove_user_target_entry(&dup_id);
+            } else if replace_existing {
+                let dup = &self.entries[idx];
+                replaced_builtin_id = Some(dup_id);
+                replaces_protected = dup.raw.protected;
+            } else {
+                return Err(ConfigError::field(
+                    "url",
+                    format!("网址已存在于目录中：{normalized_url}"),
+                ));
+            }
+        }
+
         if self.by_id.contains_key(&id) {
             return Err(ConfigError::field("id", format!("目标 ID 已存在：{id}")));
         }
@@ -2361,6 +2613,8 @@ impl Registry {
                 dedup_signals.push(sig.to_string());
             }
         }
+
+        let user_group = normalize_user_group(input.user_group.as_deref())?;
 
         let surface = input
             .surface
@@ -2414,6 +2668,7 @@ impl Registry {
             allow_online: false,
             safe_default: false,
             observed_redirect_host: None,
+            max_redirects: None,
         };
 
         let idx = self.entries.len();
@@ -2425,15 +2680,38 @@ impl Registry {
             url: normalized_url,
             surface,
             signals: dedup_signals,
+            user_group,
             origin: crate::contracts::ORIGIN_USER_IMPORTED.to_string(),
             consent_version: crate::contracts::LIABILITY_CONSENT_VERSION.to_string(),
             imported_at: now_str,
             rule_digest,
             allow_insecure_http: input.allow_insecure_http,
             http_warning,
+            replaced_builtin_id: replaced_builtin_id.clone(),
+            replaces_protected,
         };
         self.user_targets.insert(id, meta.clone());
         Ok(meta)
+    }
+
+    /// 移除一个用户目标（含其规则作用域），并重建 ID 索引。
+    fn remove_user_target_entry(&mut self, id: &str) {
+        if let Some(idx) = self.by_id.remove(id) {
+            if idx < self.entries.len() {
+                self.entries.remove(idx);
+            }
+        }
+        self.user_targets.remove(id);
+        self.authorized_user_targets.remove(id);
+        for rule in &mut self.rules.rules {
+            rule.applies_to.retain(|scope| scope.target_id != id);
+        }
+        self.by_id = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.id().to_string(), index))
+            .collect();
     }
 
     /// F1：批量文本导入网址（每行一个 URL，或 `自定义ID | URL`，忽略空行与 `#` 注释）。
@@ -2476,6 +2754,7 @@ impl Registry {
                         surface: surface.clone(),
                         signals: signals.to_vec(),
                         allow_insecure_http,
+                        user_group: None,
                     },
                     consent_accepted,
                 )
@@ -2488,7 +2767,8 @@ impl Registry {
         Ok(metas)
     }
 
-    /// F3：生成运行前显式确认提示语（"您即将对 N 个用户导入的网址发起 N 次匿名只读 GET，这是您自身行为……"）。
+    /// F3：生成运行前显式确认提示语。
+    /// 源码零发包模式仍只允许用户导入目标；发行包模式允许对用户逐次选择的内置目标确认。
     pub fn build_session_confirmation_prompt(
         &self,
         target_ids: &[String],
@@ -2496,21 +2776,33 @@ impl Registry {
         if target_ids.is_empty() {
             return Err(ConfigError::field(
                 "session_grant",
-                "请先选择至少一个用户导入的网址",
+                "请先选择至少一个检测目标",
             ));
         }
+        let mut includes_builtin = false;
         for id in target_ids {
-            if !self.user_targets.contains_key(id) {
-                return Err(ConfigError::field(
-                    "session_grant",
-                    format!("目标 '{id}' 不是用户导入目标；严禁对内置目标注入会话许可"),
-                ));
+            if self.user_targets.contains_key(id) {
+                continue;
             }
+            if self.distribution_mode && self.is_embedded_google_target(id) {
+                includes_builtin = true;
+                continue;
+            }
+            return Err(ConfigError::field(
+                "session_grant",
+                format!("目标 '{id}' 不是可授权目标；零发包模式下严禁对内置目标注入会话许可"),
+            ));
         }
         let n = target_ids.len();
-        Ok(format!(
-            "您即将对 {n} 个用户导入的网址发起 {n} 次匿名只读 GET，这是您自身行为，产生后果本软件不负责。确认后仅在本次运行注入一次性、可撤销的本地会话许可（不持久化、不扩散到同域其它路径、不提升内置目标）。"
-        ))
+        if includes_builtin {
+            Ok(format!(
+                "您即将对 {n} 个已选择的内置目标发起匿名只读检测，这是您自身行为，产生后果本软件不负责。确认后仅在本次运行注入一次性、可撤销的本地会话许可（不持久化、不扩散到同域其它路径）。"
+            ))
+        } else {
+            Ok(format!(
+                "您即将对 {n} 个用户导入的网址发起 {n} 次匿名只读 GET，这是您自身行为，产生后果本软件不负责。确认后仅在本次运行注入一次性、可撤销的本地会话许可（不持久化、不扩散到同域其它路径、不提升内置目标）。"
+            ))
+        }
     }
 
     /// F3：在用户显式确认后注入一次性、仅本次运行有效的本地会话许可（session-scoped grant）。
@@ -2534,10 +2826,13 @@ impl Registry {
             let target = self
                 .get(id)
                 .ok_or_else(|| ConfigError::field("session_grant", format!("未知目标 {id}")))?;
-            let meta = self
-                .user_targets
-                .get(id)
-                .ok_or_else(|| ConfigError::field("session_grant", "仅允许授权用户导入目标"))?;
+            let meta = self.user_targets.get(id);
+            if meta.is_none() && !(self.distribution_mode && self.is_embedded_google_target(id)) {
+                return Err(ConfigError::field(
+                    "session_grant",
+                    "仅允许授权用户导入目标或发行包模式下的内置目标",
+                ));
+            }
             let rules = self.rules_for(target);
             if rules.is_empty() {
                 return Err(ConfigError::field(
@@ -2556,7 +2851,9 @@ impl Registry {
                     exact_url: target.raw.url.clone(),
                     surface: target.raw.surface.clone(),
                     rule_versions,
-                    rule_digest: meta.rule_digest.clone(),
+                    rule_digest: meta
+                        .map(|meta| meta.rule_digest.clone())
+                        .unwrap_or_else(|| "builtin".to_string()),
                 },
             );
         }
@@ -2571,6 +2868,298 @@ impl Registry {
             *slot = Some(grant.clone());
         }
         Ok(grant)
+    }
+
+    /// 是否为"更换内置目标"的用户目标（发行包默认规则包路径）。
+    pub fn is_default_bundle_replacement(&self, target_id: &str) -> bool {
+        self.user_targets
+            .get(target_id)
+            .is_some_and(|meta| meta.replaced_builtin_id.is_some())
+    }
+
+    /// 返回被更换的内置目标 ID（非"更换"目标返回 `None`）。
+    pub fn replaced_builtin_id_of(&self, target_id: &str) -> Option<&str> {
+        self.user_targets
+            .get(target_id)
+            .and_then(|meta| meta.replaced_builtin_id.as_deref())
+    }
+
+    /// 当前持有永久在线授权的"更换内置目标"用户目标 ID（稳定排序）。
+    pub fn authorized_user_target_ids(&self) -> Vec<String> {
+        self.authorized_user_targets.keys().cloned().collect()
+    }
+
+    /// 某"更换内置目标"用户目标是否持有永久在线授权。
+    pub fn is_user_target_authorized(&self, target_id: &str) -> bool {
+        self.authorized_user_targets.contains_key(target_id)
+    }
+
+    /// 校验并返回"更换内置目标"的精确授权边界（拒绝把授权扩散到普通导入目标）。
+    fn default_bundle_scope(
+        &self,
+        target_ids: &[String],
+    ) -> Result<Vec<DefaultBundleScopeEntry>, ConfigError> {
+        if !self.distribution_mode {
+            return Err(ConfigError::field(
+                "default_bundle",
+                "请先在设置→关于软件中确认开启发行包模式，再启用默认规则包",
+            ));
+        }
+        if target_ids.is_empty() {
+            return Err(ConfigError::field(
+                "default_bundle",
+                "请先选择至少一个发行包授权版目标",
+            ));
+        }
+        let mut scoped = Vec::with_capacity(target_ids.len());
+        let mut seen = HashSet::new();
+        for id in target_ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let meta = self.user_targets.get(id).ok_or_else(|| {
+                ConfigError::field(
+                    "default_bundle",
+                    format!("目标 {id} 不是用户导入目标，拒绝发行包授权"),
+                )
+            })?;
+            if self.replaced_builtin_id_of(id).is_none() {
+                return Err(ConfigError::field(
+                    "default_bundle",
+                    format!("目标 {id} 不是更换内置目标，拒绝发行包授权扩散"),
+                ));
+            }
+            let target = self
+                .get(id)
+                .ok_or_else(|| ConfigError::field("default_bundle", format!("未知目标 {id}")))?;
+            let rules = self.rules_for(target);
+            if rules.is_empty() {
+                return Err(ConfigError::field(
+                    "default_bundle",
+                    format!("目标 {id} 未绑定有效检查规则"),
+                ));
+            }
+            let mut rule_versions = BTreeMap::new();
+            for rule in rules {
+                rule_versions.insert(rule.id.clone(), rule.version);
+            }
+            scoped.push((
+                id.clone(),
+                meta.url.clone(),
+                meta.surface.clone(),
+                meta.rule_digest.clone(),
+                rule_versions,
+            ));
+        }
+        Ok(scoped)
+    }
+
+    /// 默认规则包专属确认框选择「仅本次」：注入一次性会话许可（不落盘、退出即失效）。
+    pub fn authorize_default_bundle_session(
+        &self,
+        target_ids: &[String],
+        user_confirmed: bool,
+    ) -> Result<SessionGrant, ConfigError> {
+        self.default_bundle_scope(target_ids)?;
+        self.authorize_session_once(target_ids, user_confirmed)
+    }
+
+    /// 默认规则包专属确认框选择「永久」：写入内存授权（由调用方持久化到用户状态目录）。
+    pub fn authorize_default_bundle_permanent(
+        &mut self,
+        target_ids: &[String],
+        granted_at: &str,
+    ) -> Result<Vec<UserTargetAuthorization>, ConfigError> {
+        let scoped = self.default_bundle_scope(target_ids)?;
+        let mut out = Vec::with_capacity(scoped.len());
+        for (id, url, surface, rule_digest, rule_versions) in scoped {
+            if let Some(idx) = self.by_id.get(&id).copied() {
+                if let Some(entry) = self.entries.get_mut(idx) {
+                    entry.raw.allow_online = true;
+                }
+            }
+            let auth = UserTargetAuthorization {
+                target_id: id.clone(),
+                exact_url: url,
+                surface,
+                rule_versions,
+                rule_digest,
+                consent_version: crate::contracts::LIABILITY_CONSENT_VERSION.to_string(),
+                granted_at: granted_at.to_string(),
+                source: "BUNDLED_DEFAULT_BUNDLE".to_string(),
+            };
+            self.authorized_user_targets.insert(id, auth.clone());
+            out.push(auth);
+        }
+        Ok(out)
+    }
+
+    /// 撤销全部默认规则包永久授权（恢复零发包基线；不删除普通用户导入目标）。
+    pub fn revoke_default_bundle_authorization(&mut self) {
+        let ids: Vec<String> = self.authorized_user_targets.keys().cloned().collect();
+        for id in ids {
+            if let Some(idx) = self.by_id.get(&id).copied() {
+                if let Some(entry) = self.entries.get_mut(idx) {
+                    entry.raw.allow_online = false;
+                }
+            }
+        }
+        self.authorized_user_targets.clear();
+        self.revoke_session_grant();
+    }
+
+    /// 把当前永久授权写入用户状态目录（严禁写回 `assets/`）。
+    pub fn save_default_bundle_consent(&self, state_dir: &FsPath) -> Result<PathBuf, ConfigError> {
+        let canonical_or_raw = state_dir.to_string_lossy().replace('\\', "/");
+        if canonical_or_raw.contains("assets") {
+            return Err(ConfigError::field(
+                "state_dir",
+                "严禁将默认规则包授权写入内置 assets/ 目录",
+            ));
+        }
+        std::fs::create_dir_all(state_dir)
+            .map_err(|e| ConfigError::Io(format!("无法创建用户状态目录：{e}")))?;
+        let now = crate::state::format_time(time::OffsetDateTime::now_utc());
+        let mut targets = Vec::with_capacity(self.authorized_user_targets.len());
+        for (id, auth) in &self.authorized_user_targets {
+            let meta = self.user_targets.get(id).ok_or_else(|| {
+                ConfigError::field("default_bundle", format!("授权目标 {id} 缺少元数据"))
+            })?;
+            let replaced = meta.replaced_builtin_id.clone().ok_or_else(|| {
+                ConfigError::field(
+                    "default_bundle",
+                    format!("授权目标 {id} 不是更换内置目标，拒绝落盘"),
+                )
+            })?;
+            targets.push(PersistedDefaultBundleTarget {
+                id: id.clone(),
+                url: auth.exact_url.clone(),
+                surface: auth.surface.clone(),
+                signals: meta.signals.clone(),
+                user_group: meta.user_group.clone(),
+                allow_insecure_http: meta.allow_insecure_http,
+                replaced_builtin_id: replaced,
+                rule_versions: auth.rule_versions.clone(),
+            });
+        }
+        targets.sort_by(|a, b| a.id.cmp(&b.id));
+        let file = DefaultBundleConsentFile {
+            schema: "parallaxe.default-bundle-consent/v1".to_string(),
+            consent_version: crate::contracts::LIABILITY_CONSENT_VERSION.to_string(),
+            granted_at: now,
+            mode: "PERMANENT".to_string(),
+            targets,
+        };
+        let text = serde_json::to_string_pretty(&file)
+            .map_err(|e| ConfigError::Parse(format!("序列化默认规则包授权失败：{e}")))?;
+        let path = state_dir.join("default-bundle-consent.json");
+        std::fs::write(&path, text)
+            .map_err(|e| ConfigError::Io(format!("写入默认规则包授权失败：{e}")))?;
+        Ok(path)
+    }
+
+    /// 启动时从用户状态目录恢复默认规则包授权：
+    /// - 先按持久快照重新导入"更换内置目标"；
+    /// - 仅当规则版本仍与授权时一致，才恢复 `allow_online=true`；
+    /// - 任一条目校验失败只跳过该条，不静默扩大授权范围。
+    pub fn restore_default_bundle_state(
+        &mut self,
+        state_dir: &FsPath,
+    ) -> Result<UserStateRestoreReport, ConfigError> {
+        if !self.distribution_mode {
+            return Ok(UserStateRestoreReport::default());
+        }
+        let path = state_dir.join("default-bundle-consent.json");
+        if !path.exists() {
+            return Ok(UserStateRestoreReport::default());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| ConfigError::Io(format!("读取默认规则包授权失败：{e}")))?;
+        let file: DefaultBundleConsentFile = serde_json::from_str(&text)
+            .map_err(|e| ConfigError::Parse(format!("默认规则包授权文件损坏：{e}")))?;
+        if file.schema != "parallaxe.default-bundle-consent/v1" {
+            return Err(ConfigError::field(
+                "schema",
+                format!("不支持的默认规则包授权 schema '{}'", file.schema),
+            ));
+        }
+        if file.mode != "PERMANENT" {
+            return Err(ConfigError::field("mode", "仅 PERMANENT 授权允许落盘恢复"));
+        }
+        let mut report = UserStateRestoreReport::default();
+        for item in &file.targets {
+            // 只允许恢复"确实更换了同名同 URL 内置目标"的条目。
+            let builtin_ok = self
+                .entries
+                .iter()
+                .take(self.base_target_count)
+                .any(|entry| entry.raw.id == item.replaced_builtin_id && entry.raw.url == item.url);
+            if !builtin_ok {
+                report.skipped_targets += 1;
+                continue;
+            }
+            let input = UserTargetImportInput {
+                id: Some(item.id.clone()),
+                url: item.url.clone(),
+                surface: Some(item.surface.clone()),
+                signals: item.signals.clone(),
+                allow_insecure_http: item.allow_insecure_http,
+                user_group: Some(item.user_group.clone()),
+            };
+            match self.import_user_target_replacing(input, true, true) {
+                Ok(_) => {
+                    report.restored_targets += 1;
+                    let current: BTreeMap<String, u64> = self
+                        .get(&item.id)
+                        .map(|target| {
+                            self.rules_for(target)
+                                .into_iter()
+                                .map(|rule| (rule.id.clone(), rule.version))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if current == item.rule_versions {
+                        if let Some(idx) = self.by_id.get(&item.id).copied() {
+                            if let Some(entry) = self.entries.get_mut(idx) {
+                                entry.raw.allow_online = true;
+                            }
+                        }
+                        let meta = self.user_targets.get(&item.id).cloned();
+                        if let Some(meta) = meta {
+                            self.authorized_user_targets.insert(
+                                item.id.clone(),
+                                UserTargetAuthorization {
+                                    target_id: item.id.clone(),
+                                    exact_url: meta.url.clone(),
+                                    surface: meta.surface.clone(),
+                                    rule_versions: item.rule_versions.clone(),
+                                    rule_digest: meta.rule_digest.clone(),
+                                    consent_version: file.consent_version.clone(),
+                                    granted_at: file.granted_at.clone(),
+                                    source: "BUNDLED_DEFAULT_BUNDLE".to_string(),
+                                },
+                            );
+                            report.authorized_targets += 1;
+                        }
+                    } else {
+                        report.skipped_targets += 1;
+                    }
+                }
+                Err(_) => report.skipped_targets += 1,
+            }
+        }
+        Ok(report)
+    }
+
+    /// 撤销并删除用户状态目录中的默认规则包授权，恢复零发包基线。
+    pub fn revoke_default_bundle_state(&mut self, state_dir: &FsPath) -> Result<(), ConfigError> {
+        self.revoke_default_bundle_authorization();
+        let path = state_dir.join("default-bundle-consent.json");
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| ConfigError::Io(format!("删除默认规则包授权失败：{e}")))?;
+        }
+        Ok(())
     }
 
     /// F3：原子消费一次性会话许可（一旦被单次 run 取出，后续 run 自动回归零许可）。
@@ -2607,7 +3196,9 @@ impl Registry {
         if implicit_default || is_full_profile {
             return Admission::deny("DENIED_SAFE_DEFAULT_FALSE", reason::SAFE_DEFAULT_FALSE);
         }
-        if !self.is_user_imported(target.id()) {
+        if !self.is_user_imported(target.id())
+            && !(self.distribution_mode && self.is_embedded_google_target(target.id()))
+        {
             return Admission::deny("DENIED_NO_GRANT", reason::NO_ADMISSION);
         }
         let Some(entry) = grant.targets.get(target.id()) else {
@@ -2634,6 +3225,7 @@ impl Registry {
     /// F3：撤销一次性许可并清除全部用户导入的目标与检查方式，恢复至纯内置目录状态。
     pub fn clear_user_imports(&mut self) {
         self.revoke_session_grant();
+        self.authorized_user_targets.clear();
         let user_target_ids: HashSet<String> = self.user_targets.keys().cloned().collect();
         let user_rule_ids: HashSet<String> = self.user_rules.keys().cloned().collect();
         self.entries.truncate(self.base_target_count);
