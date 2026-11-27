@@ -1548,7 +1548,7 @@ fn run_guard_block(
     match guard_journal::pending(&dir, rule_tag, platform) {
         Ok(None) => (),
         Ok(Some(doc)) => {
-            guard_output(json, Ok(doc));
+            let _ = guard_output(json, Ok(doc));
             return ExitCode::from(3);
         }
         Err(e) => return guard_output(json, Err(e)),
